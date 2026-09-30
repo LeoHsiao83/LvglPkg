@@ -521,6 +521,7 @@
 [Protocols]
   gEfiGraphicsOutputProtocolGuid
   gEfiAbsolutePointerProtocolGuid
+  gEfiSimplePointerProtocolGuid
   gEfiSimpleTextInputExProtocolGuid
 
 [BuildOptions]

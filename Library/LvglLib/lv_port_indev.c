@@ -17,6 +17,14 @@
  * (lv_uefi_display_create, LV_USE_UEFI=1) is unchanged; only the pointer indev
  * reverts to custom.
  *
+ * Relative pointers (UsbMouseDxe / Ps2MouseDxe via ConSplitter's
+ * EFI_SIMPLE_POINTER_PROTOCOL) follow the same one-GetState-per-frame rule.
+ * Counts are converted to pixels through Mode->Resolution* (counts/mm) and
+ * LVGL_REL_PIXELS_PER_MM, carrying the remainder so slow motion is not lost.
+ * Absolute movement sets the cursor and relative movement offsets it, so
+ * whichever device moved last wins.  Relative Z emits one scroll step per
+ * wheel detent, independent of the absolute-Z ratchet below.
+ *
  * Wheel ratchet: accumulate raw Z counts, emit one scroll step (+/-40 px) per
  * LVGL_WHEEL_COUNTS_PER_DETENT=8 raw counts.  Scroll is applied directly to the
  * nearest scrollable ancestor under the cursor via lv_obj_scroll_by_bounded(),
@@ -29,8 +37,8 @@
  * once USB binds -- no retry logic is needed.
  *
  * PR#17 lazy-binding (RegisterProtocolNotify) is kept as cheap insurance for
- * the case where the protocol itself is absent at init time; the callback
- * re-grabs mAbsPointer via HandleProtocol.
+ * the case where a protocol itself is absent at init time; the callbacks
+ * re-grab mAbsPointer / mRelPointer via HandleProtocol.
  *
  * --- Keyboard ---
  * Custom keypad_read returns PRESSED while the EFI console buffer has a key and
@@ -47,6 +55,7 @@
  *********************/
 #include "lv_port_indev.h"
 #include <Library/LvglThemeLib.h>
+#include <Protocol/SimplePointer.h>
 
 // Required for lv_uefi_keypad_drain() to poke private keypad state
 #include "lvgl/src/indev/lv_indev_private.h"
@@ -70,6 +79,19 @@ extern const lv_img_dsc_t mouse_cursor_icon;
 //
 #define LVGL_WHEEL_SCROLL_PIXELS      40
 
+//
+// Relative pointer gain in pixels per millimetre of device travel.
+// UsbMouseDxe reports 8 counts/mm, so 8 moves one pixel per raw count no
+// matter what resolution ConSplitter rescales to.
+//
+#define LVGL_REL_PIXELS_PER_MM        8
+
+//
+// Relative wheel detents per "millimetre" of Z: UsbMouseDxe reports
+// ResolutionZ = 8 with one count per detent.
+//
+#define LVGL_REL_WHEEL_DETENTS_PER_MM 8
+
 /**********************
  *  STATIC VARIABLES
  **********************/
@@ -81,14 +103,21 @@ static lv_indev_t *indev_keypad = NULL;
 // Pointer state -- owned exclusively by mouse_read.
 //
 STATIC EFI_ABSOLUTE_POINTER_PROTOCOL *mAbsPointer   = NULL;
+STATIC EFI_SIMPLE_POINTER_PROTOCOL   *mRelPointer   = NULL;
 STATIC INTN                           mLastCursorX   = 0;
 STATIC INTN                           mLastCursorY   = 0;
+STATIC UINT64                         mLastAbsX      = 0;
+STATIC UINT64                         mLastAbsY      = 0;
 STATIC UINT64                         mLastAbsZ      = 0;
 STATIC INT32                          mWheelDelta    = 0;
-STATIC BOOLEAN                        mLeftButton    = FALSE;
+STATIC INT64                          mRelRemX       = 0;
+STATIC INT64                          mRelRemY       = 0;
+STATIC INT64                          mRelRemZ       = 0;
+STATIC BOOLEAN                        mAbsLeftBtn    = FALSE;
+STATIC BOOLEAN                        mRelLeftBtn    = FALSE;
 
 //
-// The mouse cursor image. Hidden until an absolute pointer (mouse) is actually
+// The mouse cursor image. Hidden until a pointer (mouse) is actually
 // present, so a machine with no mouse doesn't show a dead cursor stuck in the
 // middle of the screen.
 //
@@ -100,6 +129,8 @@ STATIC BOOLEAN                        mCursorVisible = FALSE;
 //
 STATIC EFI_EVENT    mPointerNotifyEvent        = NULL;
 STATIC VOID        *mPointerNotifyRegistration = NULL;
+STATIC EFI_EVENT    mRelNotifyEvent            = NULL;
+STATIC VOID        *mRelNotifyRegistration     = NULL;
 
 /**********************
  *   STATIC FUNCTIONS
@@ -132,11 +163,31 @@ find_scrollable_at_point (
 }
 
 //
+// Convert relative counts to output units (pixels or wheel steps) through a
+// Mode resolution in counts/mm, carrying the remainder in *Rem.
+//
+static INTN
+rel_scale (
+  INT32   Counts,
+  UINT64  Resolution,
+  INTN    UnitsPerMm,
+  INT64   *Rem
+  )
+{
+  INT64  Units;
+
+  *Rem  += (INT64)Counts * UnitsPerMm;
+  Units  = *Rem / (INT64)Resolution;
+  *Rem  -= Units * (INT64)Resolution;
+  return (INTN)Units;
+}
+
+//
 // Custom pointer read callback.
 //
-// Performs a single GetState() per frame, updating cursor position, button
-// state, and the wheel accumulator.  Applies wheel scroll when the ratchet
-// threshold is crossed.
+// Performs at most one GetState() per pointer protocol per frame, updating
+// cursor position, button state, and the wheel accumulators.  Applies wheel
+// scroll when the ratchet threshold is crossed or a relative detent arrives.
 //
 static void
 mouse_read (
@@ -146,15 +197,23 @@ mouse_read (
 {
   EFI_STATUS                   Status;
   EFI_ABSOLUTE_POINTER_STATE   AbsState;
+  EFI_SIMPLE_POINTER_STATE     RelState;
+  BOOLEAN                      AbsUsable;
+  BOOLEAN                      RelUsable;
+  BOOLEAN                      AbsLeft;
+  BOOLEAN                      LeftButton;
   UINT64                       RangeX;
   UINT64                       RangeY;
+  INTN                         PrevX;
+  INTN                         PrevY;
   int                          wheel_step;
+  int                          rel_wheel_step;
   lv_display_t                *disp;
   INT32                        hor_res;
   INT32                        ver_res;
 
   //
-  // Lazy-acquire the protocol -- succeeds after USB/ConSplitter have bound.
+  // Lazy-acquire the protocols -- succeeds after USB/ConSplitter have bound.
   //
   if (mAbsPointer == NULL) {
     gBS->HandleProtocol (
@@ -163,14 +222,25 @@ mouse_read (
            (VOID **)&mAbsPointer);
   }
 
+  if (mRelPointer == NULL) {
+    gBS->HandleProtocol (
+           gST->ConsoleInHandle,
+           &gEfiSimplePointerProtocolGuid,
+           (VOID **)&mRelPointer);
+  }
+
+  AbsUsable = (mAbsPointer != NULL) &&
+              (mAbsPointer->Mode->AbsoluteMaxX != 0) &&
+              (mAbsPointer->Mode->AbsoluteMaxY != 0);
+  RelUsable = (mRelPointer != NULL) &&
+              (mRelPointer->Mode->ResolutionX != 0) &&
+              (mRelPointer->Mode->ResolutionY != 0);
+
   //
-  // Report last position + RELEASED if the protocol is still absent or the
-  // ConSplitter's virtual range is zero (USB not yet bound).
+  // Report last position + RELEASED if neither protocol is usable yet (absent,
+  // or ConSplitter's virtual absolute range still zero before USB binds).
   //
-  if (mAbsPointer == NULL ||
-      mAbsPointer->Mode->AbsoluteMaxX == 0 ||
-      mAbsPointer->Mode->AbsoluteMaxY == 0)
-  {
+  if (!AbsUsable && !RelUsable) {
     //
     // No pointer device: keep the cursor hidden so it doesn't sit dead in the
     // middle of the screen.
@@ -186,59 +256,112 @@ mouse_read (
     return;
   }
 
-  RangeX = mAbsPointer->Mode->AbsoluteMaxX - mAbsPointer->Mode->AbsoluteMinX;
-  RangeY = mAbsPointer->Mode->AbsoluteMaxY - mAbsPointer->Mode->AbsoluteMinY;
-
   disp    = lv_indev_get_display (indev_drv);
   hor_res = lv_display_get_horizontal_resolution (disp);
   ver_res = lv_display_get_vertical_resolution (disp);
 
-  Status = mAbsPointer->GetState (mAbsPointer, &AbsState);
-  if (!EFI_ERROR (Status)) {
-    INTN  PrevX = mLastCursorX;
-    INTN  PrevY = mLastCursorY;
+  PrevX          = mLastCursorX;
+  PrevY          = mLastCursorY;
+  rel_wheel_step = 0;
 
-    //
-    // Rescale absolute X/Y to display pixels, clamp to screen edge.
-    //
-    mLastCursorX = (INTN)((AbsState.CurrentX * (UINT64)hor_res) / RangeX);
-    if (mLastCursorX > hor_res - 1) mLastCursorX = hor_res - 1;
-    if (mLastCursorX < 0)           mLastCursorX = 0;
+  if (AbsUsable) {
+    RangeX = mAbsPointer->Mode->AbsoluteMaxX - mAbsPointer->Mode->AbsoluteMinX;
+    RangeY = mAbsPointer->Mode->AbsoluteMaxY - mAbsPointer->Mode->AbsoluteMinY;
 
-    mLastCursorY = (INTN)((AbsState.CurrentY * (UINT64)ver_res) / RangeY);
-    if (mLastCursorY > ver_res - 1) mLastCursorY = ver_res - 1;
-    if (mLastCursorY < 0)           mLastCursorY = 0;
+    Status = mAbsPointer->GetState (mAbsPointer, &AbsState);
+    if (!EFI_ERROR (Status)) {
+      AbsLeft = (AbsState.ActiveButtons & BIT0) != 0;
 
-    mLeftButton = (AbsState.ActiveButtons & BIT0) != 0;
+      //
+      // Absolute drivers flag a state change on every HID report, so only
+      // take the absolute position when it (or the button) actually changed;
+      // otherwise an idle absolute device would undo relative movement.
+      //
+      if ((AbsState.CurrentX != mLastAbsX) ||
+          (AbsState.CurrentY != mLastAbsY) ||
+          (AbsLeft != mAbsLeftBtn))
+      {
+        //
+        // Rescale absolute X/Y to display pixels, clamp to screen edge.
+        //
+        mLastCursorX = (INTN)((AbsState.CurrentX * (UINT64)hor_res) / RangeX);
+        if (mLastCursorX > hor_res - 1) mLastCursorX = hor_res - 1;
+        if (mLastCursorX < 0)           mLastCursorX = 0;
 
-    //
-    // Reveal the cursor only on genuine pointer activity (movement or a
-    // button). A non-zero range alone is not enough: the ConSplitter exposes a
-    // virtual absolute pointer with a valid range even when no physical mouse
-    // is attached. Gating on real motion/click ensures a mouseless machine
-    // never shows a dead cursor stuck in the middle of the screen.
-    //
-    if (!mCursorVisible && (mCursorObj != NULL) &&
-        ((mLastCursorX != PrevX) || (mLastCursorY != PrevY) || mLeftButton))
-    {
-      lv_obj_clear_flag (mCursorObj, LV_OBJ_FLAG_HIDDEN);
-      mCursorVisible = TRUE;
+        mLastCursorY = (INTN)((AbsState.CurrentY * (UINT64)ver_res) / RangeY);
+        if (mLastCursorY > ver_res - 1) mLastCursorY = ver_res - 1;
+        if (mLastCursorY < 0)           mLastCursorY = 0;
+      }
+
+      mLastAbsX   = AbsState.CurrentX;
+      mLastAbsY   = AbsState.CurrentY;
+      mAbsLeftBtn = AbsLeft;
+
+      //
+      // Accumulate wheel delta from Z axis.
+      // UsbMouseAbsolutePointerDxe clamps CurrentZ to [0, AbsoluteMaxZ=1024]
+      // and integrates the HID wheel byte each interrupt, so the delta between
+      // successive reads is the wheel motion since the last frame.
+      //
+      mWheelDelta += (INT32)((INT64)AbsState.CurrentZ - (INT64)mLastAbsZ);
+      mLastAbsZ    = AbsState.CurrentZ;
     }
-
-    //
-    // Accumulate wheel delta from Z axis.
-    // UsbMouseAbsolutePointerDxe clamps CurrentZ to [0, AbsoluteMaxZ=1024]
-    // and integrates the HID wheel byte each interrupt, so the delta between
-    // successive reads is the wheel motion since the last frame.
-    //
-    mWheelDelta += (INT32)((INT64)AbsState.CurrentZ - (INT64)mLastAbsZ);
-    mLastAbsZ    = AbsState.CurrentZ;
+    // On EFI_NOT_READY (no state change since last call) keep last values.
   }
-  // On EFI_NOT_READY (no state change since last call) keep last values.
+
+  if (RelUsable) {
+    Status = mRelPointer->GetState (mRelPointer, &RelState);
+    if (!EFI_ERROR (Status)) {
+      mLastCursorX += rel_scale (
+                        RelState.RelativeMovementX,
+                        mRelPointer->Mode->ResolutionX,
+                        LVGL_REL_PIXELS_PER_MM,
+                        &mRelRemX);
+      if (mLastCursorX > hor_res - 1) mLastCursorX = hor_res - 1;
+      if (mLastCursorX < 0)           mLastCursorX = 0;
+
+      mLastCursorY += rel_scale (
+                        RelState.RelativeMovementY,
+                        mRelPointer->Mode->ResolutionY,
+                        LVGL_REL_PIXELS_PER_MM,
+                        &mRelRemY);
+      if (mLastCursorY > ver_res - 1) mLastCursorY = ver_res - 1;
+      if (mLastCursorY < 0)           mLastCursorY = 0;
+
+      //
+      // ConSplitter drops Z from children with ResolutionZ == 0 (Ps2MouseDxe).
+      //
+      if (mRelPointer->Mode->ResolutionZ != 0) {
+        rel_wheel_step = (int)rel_scale (
+                                RelState.RelativeMovementZ,
+                                mRelPointer->Mode->ResolutionZ,
+                                LVGL_REL_WHEEL_DETENTS_PER_MM,
+                                &mRelRemZ);
+      }
+
+      mRelLeftBtn = RelState.LeftButton;
+    }
+  }
+
+  LeftButton = mAbsLeftBtn || mRelLeftBtn;
+
+  //
+  // Reveal the cursor only on genuine pointer activity (movement or a
+  // button). A present protocol alone is not enough: the ConSplitter exposes
+  // virtual absolute and simple pointers even when no physical mouse is
+  // attached. Gating on real motion/click ensures a mouseless machine never
+  // shows a dead cursor stuck in the middle of the screen.
+  //
+  if (!mCursorVisible && (mCursorObj != NULL) &&
+      ((mLastCursorX != PrevX) || (mLastCursorY != PrevY) || LeftButton))
+  {
+    lv_obj_clear_flag (mCursorObj, LV_OBJ_FLAG_HIDDEN);
+    mCursorVisible = TRUE;
+  }
 
   data->point.x = (lv_coord_t)mLastCursorX;
   data->point.y = (lv_coord_t)mLastCursorY;
-  data->state   = mLeftButton ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
+  data->state   = LeftButton ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
   data->enc_diff = 0;
 
   //
@@ -252,6 +375,7 @@ mouse_read (
     wheel_step    = -1;
     mWheelDelta  += LVGL_WHEEL_COUNTS_PER_DETENT;
   }
+  wheel_step += rel_wheel_step;
 
   if (wheel_step != 0) {
     lv_point_t p = { (lv_coord_t)mLastCursorX, (lv_coord_t)mLastCursorY };
@@ -390,6 +514,26 @@ OnPointerProtocolInstalled (
   }
 }
 
+//
+// Same as OnPointerProtocolInstalled for EFI_SIMPLE_POINTER_PROTOCOL
+// (UsbMouseDxe / Ps2MouseDxe).
+//
+STATIC
+VOID
+EFIAPI
+OnRelPointerProtocolInstalled (
+  IN EFI_EVENT  Event,
+  IN VOID       *Context
+  )
+{
+  if (mRelPointer == NULL) {
+    gBS->HandleProtocol (
+           gST->ConsoleInHandle,
+           &gEfiSimplePointerProtocolGuid,
+           (VOID **)&mRelPointer);
+  }
+}
+
 /**********************
  *   GLOBAL FUNCTIONS
  **********************/
@@ -437,17 +581,27 @@ void lv_port_indev_init (lv_display_t *disp)
     mLastCursorX = hor_res / 2;
     mLastCursorY = ver_res / 2;
     mWheelDelta  = 0;
+    mLastAbsX    = 0;
+    mLastAbsY    = 0;
     mLastAbsZ    = 0;
-    mLeftButton  = FALSE;
+    mRelRemX     = 0;
+    mRelRemY     = 0;
+    mRelRemZ     = 0;
+    mAbsLeftBtn  = FALSE;
+    mRelLeftBtn  = FALSE;
   }
 
   //
-  // Try to grab the AbsolutePointer protocol now; USB may already be bound.
+  // Try to grab the pointer protocols now; USB may already be bound.
   //
   gBS->HandleProtocol (
          gST->ConsoleInHandle,
          &gEfiAbsolutePointerProtocolGuid,
          (VOID **)&mAbsPointer);
+  gBS->HandleProtocol (
+         gST->ConsoleInHandle,
+         &gEfiSimplePointerProtocolGuid,
+         (VOID **)&mRelPointer);
 
   //
   // Arm a protocol-install notification so OnPointerProtocolInstalled retries
@@ -465,6 +619,21 @@ void lv_port_indev_init (lv_display_t *disp)
              &gEfiAbsolutePointerProtocolGuid,
              mPointerNotifyEvent,
              &mPointerNotifyRegistration);
+    }
+  }
+
+  if (mRelNotifyEvent == NULL) {
+    Status = gBS->CreateEvent (
+                   EVT_NOTIFY_SIGNAL,
+                   TPL_CALLBACK,
+                   OnRelPointerProtocolInstalled,
+                   NULL,
+                   &mRelNotifyEvent);
+    if (!EFI_ERROR (Status)) {
+      gBS->RegisterProtocolNotify (
+             &gEfiSimplePointerProtocolGuid,
+             mRelNotifyEvent,
+             &mRelNotifyRegistration);
     }
   }
 }
@@ -522,9 +691,20 @@ void lv_port_indev_close (void)
     mPointerNotifyRegistration = NULL;
   }
 
+  if (mRelNotifyEvent != NULL) {
+    gBS->CloseEvent (mRelNotifyEvent);
+    mRelNotifyEvent        = NULL;
+    mRelNotifyRegistration = NULL;
+  }
+
   mAbsPointer  = NULL;
+  mRelPointer  = NULL;
   mWheelDelta  = 0;
   mLastAbsZ    = 0;
+  mRelRemX     = 0;
+  mRelRemY     = 0;
+  mRelRemZ     = 0;
+  mRelLeftBtn  = FALSE;
   indev_mouse  = NULL;
   indev_keypad = NULL;
 }
