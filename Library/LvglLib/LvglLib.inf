@@ -22,6 +22,7 @@
   LvglLib.c
   LvglUefiPort.h
   LvglUefiPort.c
+  LvglMath.c
 
   EscExitHandler.c
   MouseCursorIcon.c

@@ -136,6 +136,22 @@ char *strchr(const char *str, int ch);
 
 void* memset (void *dest, char ch, unsigned int count);
 
+double floor (double x);
+double ceil (double x);
+double sqrt (double x);
+double fabs (double x);
+
+//
+// Declared for stb_truetype/stb_rect_pack but not implemented: only the SDF
+// and font-packing APIs use them, and TinyTTF calls neither. Any new caller
+// fails at link time.
+//
+double fmod (double x, double y);
+double pow (double x, double y);
+double cos (double x);
+double acos (double x);
+void qsort (void *base, size_t num, size_t size, int (*compare)(const void *, const void *));
+
 FILE           *
 fopen      (
   const char  *filename,

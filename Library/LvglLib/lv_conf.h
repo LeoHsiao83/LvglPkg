@@ -979,7 +979,7 @@
 #endif
 
 /** LODEPNG decoder library */
-#define LV_USE_LODEPNG 0
+#define LV_USE_LODEPNG 1
 
 /** PNG decoder(libpng) library */
 #define LV_USE_LIBPNG 0
@@ -1032,12 +1032,29 @@
 #endif
 
 /** Built-in TTF decoder */
-#define LV_USE_TINY_TTF 0
+#define LV_USE_TINY_TTF 1
 #if LV_USE_TINY_TTF
     /* Enable loading TTF data from files */
     #define LV_TINY_TTF_FILE_SUPPORT 0
     #define LV_TINY_TTF_CACHE_GLYPH_CNT 128
     #define LV_TINY_TTF_CACHE_KERNING_CNT 256
+
+    /* No C runtime: keep stb_truetype/stb_rect_pack off <math.h>, <assert.h> and qsort from <stdlib.h>.
+     * The math functions are provided by LvglMath.c. */
+    #define STBTT_ifloor(x)     ((int)floor(x))
+    #define STBTT_iceil(x)      ((int)ceil(x))
+    #define STBTT_sqrt(x)       (float)sqrt(x)
+    #define STBTT_pow(x, y)     pow(x, y)
+    #define STBTT_fmod(x, y)    fmod(x, y)
+    #define STBTT_cos(x)        cos(x)
+    #define STBTT_acos(x)       acos(x)
+    #define STBTT_fabs(x)       (float)fabs(x)
+    #define STBTT_assert(x)     ASSERT(x)
+    #define STBTT_strlen(x)     lv_strlen(x)
+    #define STBTT_memcpy        lv_memcpy
+    #define STBTT_memset        lv_memset
+    #define STBRP_SORT          qsort
+    #define STBRP_ASSERT(x)     ASSERT(x)
 #endif
 
 /** Rlottie library */

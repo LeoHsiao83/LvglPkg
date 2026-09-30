@@ -15,6 +15,21 @@ void* memset (void *dest, char ch, unsigned int count)
   return SetMem (dest, count, ch);
 }
 
+//
+// MSVC emits calls to memcpy for large struct copies, which the memcpy macro
+// in LvglUefiPort.h cannot intercept.
+//
+#undef memcpy
+void *
+memcpy (
+  void        *dest,
+  const void  *src,
+  size_t      count
+  )
+{
+  return CopyMem (dest, src, count);
+}
+
 
 void *
 malloc (
