@@ -2,8 +2,7 @@
 #  DXE firmware-volume integration fragment for LvglPkg.
 #
 #  Include this file inside the platform's DXE FV section.  The platform must
-#  remove the stock DisplayEngineDxe INF from that FV before including this
-#  fragment.
+#  keep the stock DisplayEngineDxe INF: LvglDisplayEngineDxe depends on it.
 #
 #  Copyright (c) 2026, Hamit Karaca. All rights reserved.<BR>
 #

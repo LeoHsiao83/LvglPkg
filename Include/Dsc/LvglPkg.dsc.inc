@@ -1,8 +1,9 @@
 ## @file
 #  Platform DSC integration fragment for LvglPkg.
 #
-#  Include this file at DSC top level.  The platform must remove its stock
-#  DisplayEngineDxe component before including this fragment.
+#  Include this file at DSC top level.  The platform must keep its stock
+#  DisplayEngineDxe component: LvglDisplayEngineDxe depends on it and patches
+#  its protocol instances.
 #
 #  Copyright (c) 2026, Hamit Karaca. All rights reserved.<BR>
 #
