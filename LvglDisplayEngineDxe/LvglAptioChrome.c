@@ -376,6 +376,8 @@ BuildFooter (
   BROWSER_HOT_KEY  *HotKey;
   CONST CHAR8      *KeyLabel;
   CHAR8            *Utf8;
+  CONST CHAR8      *Label;
+  UINTN            KeyLen;
 
   Bar = lv_obj_create (Screen);
   lv_obj_remove_style_all (Bar);
@@ -429,8 +431,18 @@ BuildFooter (
       if (KeyLabel == NULL) {
         continue;
       }
-      Utf8 = ChromeUcs2ToUtf8 (HotKey->HelpString);
-      AddHotKeyChip (Bar, KeyLabel, Utf8 != NULL ? Utf8 : "");
+      Utf8  = ChromeUcs2ToUtf8 (HotKey->HelpString);
+      Label = (Utf8 != NULL) ? Utf8 : "";
+      //
+      // Help strings usually repeat the key ("F10=Save"); the chip already
+      // shows it.
+      //
+      KeyLen = AsciiStrLen (KeyLabel);
+      if ((AsciiStrnCmp (Label, KeyLabel, KeyLen) == 0) && (Label[KeyLen] == '=')) {
+        Label += KeyLen + 1;
+      }
+
+      AddHotKeyChip (Bar, KeyLabel, Label);
       if (Utf8 != NULL) {
         FreePool (Utf8);
       }
