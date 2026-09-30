@@ -3494,6 +3494,8 @@ LvglRenderForm (
 {
   EFI_STATUS  Status;
   lv_obj_t    *ContentPanel;
+  lv_obj_t    *PrevScreen;
+  lv_group_t  *PrevGroup;
 
   ASSERT (FormData != NULL);
   ASSERT (UserInputData != NULL);
@@ -3526,6 +3528,8 @@ LvglRenderForm (
   //
   // Set up session state.
   //
+  PrevScreen = mSession.Screen;
+  PrevGroup  = mSession.Group;
   ZeroMem (&mSession, sizeof (mSession));
   mSession.FormData       = FormData;
   mSession.UserInput      = UserInputData;
@@ -3632,6 +3636,18 @@ LvglRenderForm (
   // Load the screen.
   //
   lv_screen_load (mSession.Screen);
+
+  //
+  // Delete the previous form only once the new screen is active: LVGL draws
+  // nothing, not even the top layer, while there is no active screen.
+  //
+  if (PrevGroup != NULL) {
+    lv_group_delete (PrevGroup);
+  }
+
+  if (PrevScreen != NULL) {
+    lv_obj_delete (PrevScreen);
+  }
 
   //
   // Restore keyboard focus. Prefer the destination field after a nav-time
