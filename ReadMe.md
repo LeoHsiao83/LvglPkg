@@ -7,10 +7,13 @@ An EDK2 package that replaces the native text-based HII Form Browser UI with an
 
 ## Project Goal
 
-Replace EDK2's `DisplayEngineDxe` with `LvglDisplayEngineDxe`, which produces
-`EFI_DISPLAY_ENGINE_PROTOCOL` and renders HII forms using LVGL widgets.
-`SetupBrowserDxe` (the IFR parser, expression evaluator, and config router)
-continues to operate unchanged -- only the rendering layer is replaced.
+Add `LvglDisplayEngineDxe` next to EDK2's `DisplayEngineDxe`. It patches the
+text engine's `EDKII_FORM_DISPLAY_ENGINE_PROTOCOL` and `EFI_HII_POPUP_PROTOCOL`
+function pointers and renders HII forms using LVGL widgets whenever the console
+has a graphics output; on text-only consoles (serial, headless) the calls fall
+through to the text engine. `SetupBrowserDxe` (the IFR parser, expression
+evaluator, and config router) continues to operate unchanged -- only the
+rendering layer is taken over.
 
 ### Architecture
 
@@ -20,7 +23,7 @@ BDS (F2/DEL) -> EFI_FORM_BROWSER2_PROTOCOL (SetupBrowserDxe)
                     |  walks IFR, evaluates expressions, manages config
                     |
                     v
-              EFI_DISPLAY_ENGINE_PROTOCOL <- REPLACED
+              EFI_DISPLAY_ENGINE_PROTOCOL <- PATCHED (text engine kept as fallback)
               (LvglDisplayEngineDxe)
                     |
                     |  FORM_DISPLAY_ENGINE_FORM -> LVGL widgets
@@ -62,7 +65,7 @@ LvglPkg/
 +--- Library/LvglThemeLib/      Runtime UI-scale font/metric helpers
 +--- Library/LvglUiConfigLib/   NVRAM/PCD UI configuration helpers
 +--- LvglDisplayEngineDxe/      Display engine DXE driver (the main deliverable)
-|   +--- LvglDisplayEngineDxe.c Protocol installation, entry/unload
+|   +--- LvglDisplayEngineDxe.c Text engine hot-patch, entry/unload
 |   +--- LvglFormRenderer.c     FormDisplay() -> LVGL widget builder + event loop
 |   +--- LvglFormRenderer.h     Renderer types and API
 |   +--- LvglAptioChrome.c/.h   Aptio-style chrome (header/footer/nav bar)
@@ -101,12 +104,13 @@ handling the built-in drivers don't provide on their own.
 
 ## Integration
 
-Replacing the stock display engine in OVMF takes several coordinated edits.
+Integration only adds entries; the stock `DisplayEngineDxe` must stay in the
+platform. `LvglDisplayEngineDxe` has a dependency on its protocols and patches
+them in place, so removing it leaves no display engine at all.
 
 LvglPkg provides reusable DSC and FDF fragments as an alternative to manually
-adding the package-owned entries described in steps 1-3. After removing the
-stock `DisplayEngineDxe` entries, include the DSC fragment at the top level of
-the platform DSC:
+adding the package-owned entries described in steps 1-3. Include the DSC
+fragment at the top level of the platform DSC:
 
 ```ini
 !include LvglPkg/Include/Dsc/LvglPkg.dsc.inc
@@ -119,18 +123,14 @@ Include the FDF fragment inside the platform's DXE firmware-volume section:
 ```
 
 These fragments add `LvglDisplayEngineDxe`, `LvglSetupDxe`, and all three
-LvglPkg library-class mappings. The USB mouse replacement in step 4 remains a
-platform edit because the location of the platform's existing USB component
-lists varies. Do not also add the entries from steps 1-3 manually when using
-the fragments.
+LvglPkg library-class mappings. Pointer drivers (step 4) remain a platform
+choice. Do not also add the entries from steps 1-3 manually when using the
+fragments.
 
-### 1. DSC -- replace the display engine module
+### 1. DSC -- add the display engine module
 
-In `OvmfPkg/OvmfPkgX64.dsc`, find and remove:
-```
-MdeModulePkg/Universal/DisplayEngineDxe/DisplayEngineDxe.inf
-```
-and replace it with:
+In `OvmfPkg/OvmfPkgX64.dsc`, keep
+`MdeModulePkg/Universal/DisplayEngineDxe/DisplayEngineDxe.inf` and add after it:
 ```
 LvglPkg/LvglDisplayEngineDxe/LvglDisplayEngineDxe.inf
 ```
@@ -142,13 +142,10 @@ class for its runtime UI-scale font/metric helpers. Map it in
 LvglThemeLib|LvglPkg/Library/LvglThemeLib/LvglThemeLib.inf
 ```
 
-### 2. FDF -- replace the display engine in the firmware image
+### 2. FDF -- add the display engine to the firmware image
 
-In `OvmfPkg/OvmfPkgX64.fdf`, do the same swap:
+In `OvmfPkg/OvmfPkgX64.fdf`, keep the stock `DisplayEngineDxe` INF and add:
 ```
-# remove
-INF  MdeModulePkg/Universal/DisplayEngineDxe/DisplayEngineDxe.inf
-# add
 INF  LvglPkg/LvglDisplayEngineDxe/LvglDisplayEngineDxe.inf
 ```
 
@@ -174,38 +171,23 @@ In `OvmfPkg/OvmfPkgX64.fdf`, add the driver to the DXE FV section next to
 INF  LvglPkg/LvglSetupDxe/LvglSetupDxe.inf
 ```
 
-### 4. USB mouse -- switch to the AbsolutePointer driver
+### 4. Pointer drivers
 
-LVGL needs `EFI_ABSOLUTE_POINTER_PROTOCOL`. EDK2 ships two USB mouse drivers,
-and they cannot coexist -- `UsbMouseDxe` advertises a higher driver-binding
-`Version` than `UsbMouseAbsolutePointerDxe`, so the core picks it first and
-locks `UsbIo` `BY_DRIVER`, blocking the AbsolutePointer driver. Remove the
-former, add the latter.
-
-In `OvmfPkg/Include/Dsc/UsbComponents.dsc.inc` and
-`OvmfPkg/OvmfPkgX64.fdf` (under the DXE FV section):
+The engine reads both `EFI_SIMPLE_POINTER_PROTOCOL` (relative: `UsbMouseDxe`,
+`Ps2MouseDxe`) and `EFI_ABSOLUTE_POINTER_PROTOCOL` (e.g.
+`UsbMouseAbsolutePointerDxe`, touch) from the console input handle, so the
+platform's existing mouse drivers work unchanged. OVMF ships no mouse driver;
+add one in `OvmfPkg/Include/Dsc/UsbComponents.dsc.inc` and the FDF DXE FV
+section:
 ```
-# remove
 MdeModulePkg/Bus/Usb/UsbMouseDxe/UsbMouseDxe.inf
-# add
-MdeModulePkg/Bus/Usb/UsbMouseAbsolutePointerDxe/UsbMouseAbsolutePointerDxe.inf
 ```
+`UsbMouseDxe` and `UsbMouseAbsolutePointerDxe` cannot both bind the same USB
+mouse -- `UsbMouseDxe` advertises a higher driver-binding `Version`, so the
+core picks it first and locks `UsbIo` `BY_DRIVER`. Include only one of them.
 
 QEMU must use `-device usb-mouse` (Boot/Mouse class), **not** `-device usb-tablet`
 -- neither EDK2 mouse driver binds to tablet's HID report descriptor.
-
-> **Shortcut -- add-only integration**
->
-> If you'd rather not edit the stock OVMF lines, you can simply **add**
-> `LvglPkg/LvglDisplayEngineDxe/LvglDisplayEngineDxe.inf` to the DSC
-> `[Components]` section and the FDF DXE FV section without removing
-> `MdeModulePkg/Universal/DisplayEngineDxe/DisplayEngineDxe.inf`. Both
-> drivers will be built and dispatched, but only one `EFI_DISPLAY_ENGINE_PROTOCOL`
-> producer wins -- whichever is installed last. In practice
-> `LvglDisplayEngineDxe` reliably takes over because it dispatches after the
-> stock module. The same shortcut applies to the mouse driver: leaving
-> `UsbMouseDxe` in place will block AbsolutePointer (driver-binding `Version`
-> sort), so for mouse input the swap in step 4 is **not** optional.
 
 ### 5. PACKAGES_PATH
 
@@ -316,14 +298,14 @@ through LVGL. Exit QEMU with `Ctrl+A` then `X` (when `-serial stdio` is used).
 
 ## Troubleshooting
 
-- **Mouse cursor doesn't move / no response** -- `UsbMouseDxe` is still in the
-  firmware. Check `OvmfPkg/Include/Dsc/UsbComponents.dsc.inc` and the FDF;
-  both `UsbMouseDxe` references must be replaced with `UsbMouseAbsolutePointerDxe`.
-  Also verify QEMU launches with `-device usb-mouse`, not `usb-tablet`.
-- **Black screen on entering Setup** -- the stock `DisplayEngineDxe` was not
-  removed and is winning protocol-installation order, or LvglDisplayEngineDxe
-  failed to load. Re-check both DSC and FDF -- the swap must happen in both
-  files.
+- **Mouse cursor doesn't move / no response** -- no mouse driver is in the
+  firmware, or both `UsbMouseDxe` and `UsbMouseAbsolutePointerDxe` are and the
+  wrong one bound. Also verify QEMU launches with `-device usb-mouse`, not
+  `usb-tablet`. The cursor stays hidden until the mouse first moves.
+- **Setup is drawn as text on a graphics console** -- `LvglDisplayEngineDxe`
+  was not dispatched. Check that the stock `DisplayEngineDxe` is still in both
+  DSC and FDF (it is a dependency), and look for
+  `LvglDisplayEngine: text display engine patched` in the debug log.
 - **`build` fails with "package not found"** -- `PACKAGES_PATH` is not set, or
   doesn't contain the directory holding `LvglPkg/`. Echo it and verify.
 - **`fatal error: lvgl/lvgl.h: No such file or directory`** -- the LVGL
