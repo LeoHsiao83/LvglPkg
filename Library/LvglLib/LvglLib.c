@@ -27,10 +27,61 @@ LvglGetUiScale (
   return Config.UiScale;
 }
 
-// mTickSupport stays FALSE permanently (tick_get_cb / UefiLvglTickInit removed).
-// Kept because LvglDisplayEngineDxe/LvglFormRenderer.c references it via extern.
+// TRUE when LVGL time comes from the TimerLib performance counter. FALSE with a
+// null TimerLib; UI loops then advance the tick by their wait period.
 BOOLEAN  mTickSupport = FALSE;
 STATIC BOOLEAN  mUefiLvglInitDone = FALSE;
+
+STATIC UINT64  mTickCounterStart;
+STATIC UINT64  mTickCounterEnd;
+STATIC UINT64  mTickCounterLast;
+STATIC UINT64  mTickCounterTotal;
+
+//
+// The counter may be narrow (24-bit ACPI PM timer wraps every ~4.7 s), so
+// accumulate deltas instead of converting the raw value. Gaps longer than one
+// wrap between calls undercount, which only slows LVGL time.
+//
+STATIC
+uint32_t
+tick_get_cb (
+  void
+  )
+{
+  UINT64  Now;
+  UINT64  Delta;
+
+  Now = GetPerformanceCounter ();
+  if (mTickCounterEnd >= mTickCounterStart) {
+    Delta = (Now >= mTickCounterLast) ? Now - mTickCounterLast
+                                      : (mTickCounterEnd - mTickCounterLast) + (Now - mTickCounterStart) + 1;
+  } else {
+    Delta = (Now <= mTickCounterLast) ? mTickCounterLast - Now
+                                      : (mTickCounterLast - mTickCounterEnd) + (mTickCounterStart - Now) + 1;
+  }
+
+  mTickCounterLast   = Now;
+  mTickCounterTotal += Delta;
+
+  return (uint32_t)DivU64x32 (GetTimeInNanoSecond (mTickCounterTotal), 1000 * 1000);
+}
+
+STATIC
+VOID
+UefiLvglTickInit (
+  VOID
+  )
+{
+  mTickCounterLast = GetPerformanceCounter ();
+  if (mTickCounterLast == 0) {
+    return;
+  }
+
+  GetPerformanceCounterProperties (&mTickCounterStart, &mTickCounterEnd);
+  mTickCounterTotal = 0;
+  mTickSupport      = TRUE;
+  lv_tick_set_cb (tick_get_cb);
+}
 
 #if LV_USE_LOG
 static void efi_lv_log_print(lv_log_level_t level, const char * buf)
@@ -63,6 +114,8 @@ UefiLvglInit (
   lv_uefi_init (gImageHandle, gST);
 
   lv_init();
+
+  UefiLvglTickInit ();
 
 #if LV_USE_LOG
   lv_log_register_print_cb (efi_lv_log_print);

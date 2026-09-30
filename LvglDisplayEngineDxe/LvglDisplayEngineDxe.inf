@@ -36,6 +36,7 @@
   UefiDriverEntryPoint
   UefiBootServicesTableLib
   UefiRuntimeServicesTableLib
+  UefiLib
   DebugLib
   PrintLib
   BaseMemoryLib

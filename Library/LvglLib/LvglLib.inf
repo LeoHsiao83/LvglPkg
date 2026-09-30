@@ -515,6 +515,7 @@
   DebugLib
   PrintLib
   BaseLib
+  TimerLib
   LvglUiConfigLib
   LvglThemeLib
 

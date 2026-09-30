@@ -16,10 +16,20 @@
 #include <LvglTheme.h>
 #include <Library/LvglUiConfigLib.h>
 #include <Library/PrintLib.h>
+#include <Library/UefiLib.h>
 #include <Guid/MdeModuleHii.h>
 
 STATIC LVGL_FORM_SESSION  mSession;
 STATIC BOOLEAN            mLvglReady = FALSE;
+
+//
+// UI loop idle wait between LVGL frames, bounded so pointer tracking stays
+// smooth even when lv_timer_handler() reports no pending timer.
+//
+#define LVGL_FRAME_MIN_MS  1
+#define LVGL_FRAME_MAX_MS  16
+
+STATIC EFI_EVENT  mFrameTimer = NULL;
 
 //
 // Custom navigation list. lv_group_focus_next/prev skip widgets that have
@@ -3429,6 +3439,52 @@ BuildFormWidgets (
   }
 }
 
+/**
+  Run one LVGL frame, then idle until the next LVGL timer is due.
+
+  WaitForEvent is only legal at TPL_APPLICATION; at a raised TPL this falls
+  back to a fixed 10 ms Stall.
+**/
+STATIC
+VOID
+LvglRunFrame (
+  VOID
+  )
+{
+  EFI_STATUS      Status;
+  UINT32          Delay;
+  UINTN           Index;
+  extern BOOLEAN  mTickSupport;
+
+  Delay = lv_timer_handler ();
+  Delay = MAX (LVGL_FRAME_MIN_MS, MIN (Delay, LVGL_FRAME_MAX_MS));
+
+  if (EfiGetCurrentTpl () == TPL_APPLICATION) {
+    if (mFrameTimer == NULL) {
+      Status = gBS->CreateEvent (EVT_TIMER, 0, NULL, NULL, &mFrameTimer);
+      if (EFI_ERROR (Status)) {
+        mFrameTimer = NULL;
+      }
+    }
+
+    if ((mFrameTimer != NULL) &&
+        !EFI_ERROR (gBS->SetTimer (mFrameTimer, TimerRelative, EFI_TIMER_PERIOD_MILLISECONDS (Delay))) &&
+        !EFI_ERROR (gBS->WaitForEvent (1, &mFrameTimer, &Index)))
+    {
+      if (!mTickSupport) {
+        lv_tick_inc (Delay);
+      }
+
+      return;
+    }
+  }
+
+  gBS->Stall (10 * 1000);
+  if (!mTickSupport) {
+    lv_tick_inc (10);
+  }
+}
+
 EFI_STATUS
 EFIAPI
 LvglRenderForm (
@@ -3438,7 +3494,6 @@ LvglRenderForm (
 {
   EFI_STATUS  Status;
   lv_obj_t    *ContentPanel;
-  extern BOOLEAN mTickSupport;
 
   ASSERT (FormData != NULL);
   ASSERT (UserInputData != NULL);
@@ -3614,11 +3669,7 @@ LvglRenderForm (
   DEBUG ((DEBUG_INFO, "LvglRenderer: entering event loop for FormId=0x%x\n", FormData->FormId));
 
   while (!mSession.ExitRequested) {
-    lv_timer_handler ();
-    gBS->Stall (10 * 1000);  // 10 ms
-    if (!mTickSupport) {
-      lv_tick_inc (10);
-    }
+    LvglRunFrame ();
 
     //
     // Process popup result once the overlay has been dismissed.
@@ -3656,7 +3707,6 @@ LvglRunConfirmPopup (
 {
   lv_group_t  *PopupGroup;
   lv_indev_t  *Indev;
-  extern BOOLEAN  mTickSupport;
 
   if (!mLvglReady) {
     return BROWSER_ACTION_DISCARD;
@@ -3683,11 +3733,7 @@ LvglRunConfirmPopup (
   lv_uefi_keypad_drain ();
 
   while (mPopupResult == LVGL_POPUP_PENDING) {
-    lv_timer_handler ();
-    gBS->Stall (10 * 1000);
-    if (!mTickSupport) {
-      lv_tick_inc (10);
-    }
+    LvglRunFrame ();
   }
 
   //
@@ -3899,7 +3945,6 @@ LvglHiiCreatePopup (
   CHAR16          *Ucs2;
   CHAR8           *Utf8;
   CONST CHAR8     *Title;
-  extern BOOLEAN  mTickSupport;
 
   if (!mLvglReady) {
     return EFI_DEVICE_ERROR;
@@ -3948,11 +3993,7 @@ LvglHiiCreatePopup (
   lv_uefi_keypad_drain ();
 
   while (mHiiPopupSel == LVGL_HII_POPUP_PENDING) {
-    lv_timer_handler ();
-    gBS->Stall (10 * 1000);
-    if (!mTickSupport) {
-      lv_tick_inc (10);
-    }
+    LvglRunFrame ();
   }
 
   //
@@ -3991,6 +4032,11 @@ LvglRendererCleanup (
   }
 
   mBannerCount = 0;
+
+  if (mFrameTimer != NULL) {
+    gBS->CloseEvent (mFrameTimer);
+    mFrameTimer = NULL;
+  }
 
   if (mSession.Group != NULL) {
     lv_group_delete (mSession.Group);
