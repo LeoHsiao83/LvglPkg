@@ -107,7 +107,11 @@ LvglFormDisplay (
 
   DEBUG ((DEBUG_INFO, "LvglDisplayEngine: FormDisplay() called -- FormId=0x%x\n", FormData->FormId));
 
-  if (IsGraphicsConsole ()) {
+  //
+  // Any other BrowserStatus asks only for an error popup: the text engine
+  // shows it and returns without drawing the form.
+  //
+  if (IsGraphicsConsole () && (FormData->BrowserStatus == BROWSER_SUCCESS)) {
     //
     // LvglRenderForm only fails in UefiLvglInit, before anything is drawn.
     //
