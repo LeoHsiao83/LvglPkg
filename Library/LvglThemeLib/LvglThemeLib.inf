@@ -26,4 +26,4 @@
 
 [BuildOptions]
   GCC:*_*_*_CC_FLAGS = -I$(WORKSPACE)/LvglPkg/Library/LvglLib
-  MSFT:*_*_*_CC_FLAGS = /I$(WORKSPACE)/LvglPkg/Library/LvglLib
+  MSFT:*_*_*_CC_FLAGS = /I$(WORKSPACE)/LvglPkg/Library/LvglLib /wd4244 /wd4204 /wd4389 /wd4221 /wd4800 /wd4267 /wd4018 /wd4047 /wd4245 /wd4003 /wd4702 /wd4718 /wd4706 /wd4819 /wd4028 /wd5287
