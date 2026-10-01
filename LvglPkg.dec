@@ -50,3 +50,9 @@
   ## show the form title in the subtitle bar and render the centered banner in
   ## the content area (original behavior).
   gLvglPkgTokenSpaceGuid.PcdLvglAptioSubtitleShowsDeviceModel|FALSE|BOOLEAN|0x00000008
+
+  ## File GUID of a FREEFORM file whose RAW section holds a TrueType font. When
+  ## set, title/body/popup text is rendered with LVGL TinyTTF at the theme sizes,
+  ## falling back to Montserrat for LV_SYMBOL_* glyphs. All-zero keeps the
+  ## built-in Montserrat fonts.
+  gLvglPkgTokenSpaceGuid.PcdLvglTtfFontFile|{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 }|VOID*|0x00000009
