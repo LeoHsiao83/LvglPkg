@@ -13,6 +13,7 @@
 
 #include "LvglFormRenderer.h"
 #include "LvglAptioChrome.h"
+#include "LvglTextPopup.h"
 #include <LvglTheme.h>
 #include <Library/LvglUiConfigLib.h>
 #include <Library/PrintLib.h>
@@ -894,6 +895,218 @@ CreateDialogMessageLabel (
   lv_obj_set_style_text_color (MsgLbl, lv_color_hex (THEME_COLOR_TEXT_POPUP), 0);
   THEME_APPLY_BODY_FONT (MsgLbl);
   return MsgLbl;
+}
+
+//
+// ---- Windows for text popups intercepted by LvglTextPopup.c ----
+//
+
+STATIC lv_obj_t  *mTpOverlay = NULL;
+STATIC lv_obj_t  *mTpTitle;
+STATIC lv_obj_t  *mTpTitleSep;
+STATIC lv_obj_t  *mTpRowLbl[TP_ROW_MAX];
+STATIC lv_obj_t  *mTpBackdrop = NULL;
+STATIC TP_SCENE  mTpShown;
+
+STATIC
+VOID
+TpRefresh (
+  VOID
+  )
+{
+  gLvglTpBusy = TRUE;
+  lv_refr_now (NULL);
+  gLvglTpBusy = FALSE;
+}
+
+STATIC
+VOID
+TpJoinTitle (
+  IN  CONST TP_SCENE  *Scene,
+  OUT CHAR8           *Title,
+  IN  UINTN           Size
+  )
+{
+  UINTN  Index;
+
+  Title[0] = '\0';
+  for (Index = 0; Index < Scene->RowCount; Index++) {
+    if ((Scene->Row[Index].Kind != TpRowTitle) || (Scene->Row[Index].Text[0] == '\0')) {
+      continue;
+    }
+
+    if (AsciiStrLen (Title) + AsciiStrLen (Scene->Row[Index].Text) + 2 > Size) {
+      break;
+    }
+
+    if (Title[0] != '\0') {
+      AsciiStrCatS (Title, Size, "\n");
+    }
+
+    AsciiStrCatS (Title, Size, Scene->Row[Index].Text);
+  }
+}
+
+STATIC
+VOID
+TpSetTitle (
+  IN CONST CHAR8  *Title
+  )
+{
+  lv_label_set_text (mTpTitle, Title);
+  if (Title[0] == '\0') {
+    lv_obj_add_flag (mTpTitle, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag (mTpTitleSep, LV_OBJ_FLAG_HIDDEN);
+  } else {
+    lv_obj_remove_flag (mTpTitle, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_remove_flag (mTpTitleSep, LV_OBJ_FLAG_HIDDEN);
+  }
+}
+
+STATIC
+VOID
+TpStyleRow (
+  IN lv_obj_t        *Lbl,
+  IN CONST TP_SCENE  *Scene,
+  IN UINTN           Index
+  )
+{
+  lv_label_set_text (Lbl, Scene->Row[Index].Text);
+  if (Scene->Row[Index].Text[0] == '\0') {
+    lv_obj_add_flag (Lbl, LV_OBJ_FLAG_HIDDEN);
+  } else {
+    lv_obj_remove_flag (Lbl, LV_OBJ_FLAG_HIDDEN);
+  }
+
+  lv_obj_set_style_bg_opa (Lbl, Scene->Row[Index].Highlight ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+}
+
+/**
+  Show @a Scene as a window, or update the labels of the window already
+  showing the same box. Draws synchronously: the popup's owner is waiting for
+  a key and the LVGL loop is not running.
+**/
+VOID
+LvglTpUiShow (
+  IN CONST TP_SCENE  *Scene
+  )
+{
+  LVGL_DIALOG_SHELL  Shell;
+  CHAR8              Title[TP_TEXT_MAX * 2];
+  UINTN              Index;
+  UINTN              WidthPct;
+  BOOLEAN            Same;
+  lv_obj_t           *Lbl;
+
+  TpJoinTitle (Scene, Title, sizeof (Title));
+
+  Same = (BOOLEAN)((mTpOverlay != NULL) &&
+                   (CompareMem (&Scene->Box, &mTpShown.Box, sizeof (Scene->Box)) == 0) &&
+                   (Scene->RowCount == mTpShown.RowCount));
+  for (Index = 0; Same && (Index < Scene->RowCount); Index++) {
+    Same = (BOOLEAN)(Scene->Row[Index].Kind == mTpShown.Row[Index].Kind);
+  }
+
+  if (Same) {
+    if (AsciiStrCmp (lv_label_get_text (mTpTitle), Title) != 0) {
+      TpSetTitle (Title);
+    }
+
+    for (Index = 0; Index < Scene->RowCount; Index++) {
+      if ((mTpRowLbl[Index] != NULL) &&
+          ((AsciiStrCmp (Scene->Row[Index].Text, mTpShown.Row[Index].Text) != 0) ||
+           (Scene->Row[Index].Highlight != mTpShown.Row[Index].Highlight)))
+      {
+        TpStyleRow (mTpRowLbl[Index], Scene, Index);
+      }
+    }
+  } else {
+    LvglTpUiDismiss (FALSE);
+
+    //
+    // LVGL draws nothing, not even the top layer, without an active screen
+    // (e.g. after ExitDisplay deleted the form).
+    //
+    if (lv_screen_active () == NULL) {
+      mTpBackdrop = lv_obj_create (NULL);
+      lv_obj_set_style_bg_color (mTpBackdrop, lv_color_hex (THEME_COLOR_BG_SCREEN), 0);
+      lv_screen_load (mTpBackdrop);
+    }
+
+    CreateDialogShell (&Shell, Title);
+    lv_obj_delete (Shell.BtnRow);
+    mTpOverlay = Shell.Overlay;
+    mTpTitle    = lv_obj_get_child (Shell.Card, 0);
+    mTpTitleSep = lv_obj_get_child (Shell.Card, 1);
+    TpSetTitle (Title);
+
+    WidthPct = (Scene->Box.Right - Scene->Box.Left + 1) * 100 / Scene->GridCols + 10;
+    lv_obj_set_width (Shell.Card, LV_PCT (MIN (90, MAX (THEME_DIALOG_WIDTH_PCT, WidthPct))));
+
+    ZeroMem (mTpRowLbl, sizeof (mTpRowLbl));
+    for (Index = 0; Index < Scene->RowCount; Index++) {
+      if (Scene->Row[Index].Kind == TpRowTitle) {
+        continue;
+      }
+
+      Lbl = CreateDialogMessageLabel (Shell.Card, "", TRUE);
+      lv_obj_set_style_text_align (
+        Lbl,
+        (Scene->Centered || (Scene->Row[Index].Kind == TpRowFooter)) ? LV_TEXT_ALIGN_CENTER : LV_TEXT_ALIGN_LEFT,
+        0
+        );
+      lv_obj_set_style_bg_color (Lbl, lv_color_hex (THEME_COLOR_HIGHLIGHT_ROW), 0);
+      lv_obj_set_style_pad_hor (Lbl, 6, 0);
+      lv_obj_set_style_pad_ver (Lbl, 2, 0);
+      if (Scene->Row[Index].Kind == TpRowFooter) {
+        lv_obj_set_style_text_color (Lbl, lv_color_hex (THEME_COLOR_TEXT_SECONDARY), 0);
+      }
+
+      mTpRowLbl[Index] = Lbl;
+      TpStyleRow (Lbl, Scene, Index);
+    }
+  }
+
+  CopyMem (&mTpShown, Scene, sizeof (mTpShown));
+  TpRefresh ();
+}
+
+VOID
+LvglTpUiDismiss (
+  IN BOOLEAN  Refresh
+  )
+{
+  if (mTpOverlay == NULL) {
+    return;
+  }
+
+  lv_obj_delete (mTpOverlay);
+  mTpOverlay = NULL;
+  if (Refresh && (lv_screen_active () != NULL)) {
+    TpRefresh ();
+  }
+}
+
+BOOLEAN
+LvglTpUiLive (
+  VOID
+  )
+{
+  return (BOOLEAN)(mTpOverlay != NULL);
+}
+
+/**
+  Delete the backdrop once a form screen has replaced it.
+**/
+VOID
+LvglTpUiDropBackdrop (
+  VOID
+  )
+{
+  if ((mTpBackdrop != NULL) && (lv_screen_active () != mTpBackdrop)) {
+    lv_obj_delete (mTpBackdrop);
+    mTpBackdrop = NULL;
+  }
 }
 
 /**
@@ -3456,7 +3669,10 @@ LvglRunFrame (
   UINTN           Index;
   extern BOOLEAN  mTickSupport;
 
-  Delay = lv_timer_handler ();
+  LvglTpFrame ();
+  gLvglTpBusy = TRUE;
+  Delay       = lv_timer_handler ();
+  gLvglTpBusy = FALSE;
   Delay = MAX (LVGL_FRAME_MIN_MS, MIN (Delay, LVGL_FRAME_MAX_MS));
 
   if (EfiGetCurrentTpl () == TPL_APPLICATION) {
@@ -3518,6 +3734,7 @@ LvglRenderForm (
   // Clear the console and hide cursor for graphical mode.
   //
   gST->ConOut->EnableCursor (gST->ConOut, FALSE);
+  LvglTpFormEnter ();
 
   //
   // Tear down any chrome-owned timers from the previous form before we
@@ -3636,6 +3853,7 @@ LvglRenderForm (
   // Load the screen.
   //
   lv_screen_load (mSession.Screen);
+  LvglTpUiDropBackdrop ();
 
   //
   // Delete the previous form only once the new screen is active: LVGL draws

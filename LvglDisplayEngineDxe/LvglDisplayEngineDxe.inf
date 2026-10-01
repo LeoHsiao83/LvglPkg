@@ -26,6 +26,9 @@
   LvglFormRenderer.h
   LvglAptioChrome.c
   LvglAptioChrome.h
+  LvglTextPopup.c
+  LvglTextPopup.h
+  LvglTextPopupScene.c
 
 [Packages]
   MdePkg/MdePkg.dec
@@ -51,11 +54,13 @@
 [Guids]
   gEfiIfrTianoGuid                      ## CONSUMES ## GUID (Identify front-page banner opcodes)
   gLvglUiConfigFormSetGuid              ## CONSUMES
+  gEfiEventExitBootServicesGuid         ## CONSUMES ## Event
 
 [Protocols]
   gEdkiiFormDisplayEngineProtocolGuid   ## CONSUMES
   gEfiHiiPopupProtocolGuid              ## CONSUMES
   gEfiGraphicsOutputProtocolGuid        ## SOMETIMES_CONSUMES
+  gEfiSimpleTextOutProtocolGuid         ## SOMETIMES_CONSUMES
 
 [BuildOptions]
   # Same LVGL header warnings as LvglLib.inf.

@@ -19,6 +19,7 @@
 #include <Protocol/DisplayProtocol.h>
 #include <Protocol/GraphicsOutput.h>
 #include "LvglFormRenderer.h"
+#include "LvglTextPopup.h"
 
 //
 // Protocol instances owned by the text DisplayEngineDxe. SetupBrowserDxe
@@ -107,21 +108,28 @@ LvglFormDisplay (
 
   DEBUG ((DEBUG_INFO, "LvglDisplayEngine: FormDisplay() called -- FormId=0x%x\n", FormData->FormId));
 
-  //
-  // Any other BrowserStatus asks only for an error popup: the text engine
-  // shows it and returns without drawing the form.
-  //
-  if (IsGraphicsConsole () && (FormData->BrowserStatus == BROWSER_SUCCESS)) {
+  if (IsGraphicsConsole ()) {
+    //
+    // Any other BrowserStatus asks only for an error popup: the text engine
+    // shows it and returns without drawing the form. The popup is
+    // intercepted while the text popup session is active.
+    //
+    if (FormData->BrowserStatus != BROWSER_SUCCESS) {
+      return mTextFormDisplay.FormDisplay (FormData, UserInputData);
+    }
+
     //
     // LvglRenderForm only fails in UefiLvglInit, before anything is drawn.
     //
     Status = LvglRenderForm (FormData, UserInputData);
     if (!EFI_ERROR (Status)) {
       mLvglUsed = TRUE;
+      LvglTpFormLeave ();
       return Status;
     }
   }
 
+  LvglTpEnd ();
   return mTextFormDisplay.FormDisplay (FormData, UserInputData);
 }
 
@@ -142,7 +150,12 @@ LvglExitDisplay (
     mLvglUsed = FALSE;
   }
 
+  //
+  // Its ClearScreen must not dismiss a popup raised after SendForm returns.
+  //
+  LvglTpIgnoreClears (TRUE);
   mTextFormDisplay.ExitDisplay ();
+  LvglTpIgnoreClears (FALSE);
 }
 
 /**
@@ -203,6 +216,7 @@ LvglDisplayEngineInit (
   mFormDisplay->ExitDisplay       = LvglExitDisplay;
   mFormDisplay->ConfirmDataChange = LvglConfirmDataChange;
   mHiiPopup->CreatePopup          = LvglHiiPopupCreate;
+  LvglTpInit ();
 
   DEBUG ((DEBUG_INFO, "LvglDisplayEngine: text display engine patched\n"));
 
@@ -222,6 +236,7 @@ LvglDisplayEngineUnload (
   IN EFI_HANDLE  ImageHandle
   )
 {
+  LvglTpUnload ();
   CopyMem (mFormDisplay, &mTextFormDisplay, sizeof (mTextFormDisplay));
   CopyMem (mHiiPopup, &mTextHiiPopup, sizeof (mTextHiiPopup));
 
