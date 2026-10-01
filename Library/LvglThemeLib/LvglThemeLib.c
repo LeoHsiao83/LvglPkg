@@ -9,10 +9,31 @@
 #include "lv_conf.h"
 
 #include <Library/LvglThemeLib.h>
+#include <Library/BaseMemoryLib.h>
+#include <Library/DebugLib.h>
+#include <Library/DxeServicesLib.h>
+#include <Library/MemoryAllocationLib.h>
+#include <Library/PcdLib.h>
 #include <Guid/LvglUiConfig.h>
 
 STATIC UINT8  mScaleNum = 1;
 STATIC UINT8  mScaleDen = 1;
+
+//
+// TinyTTF fonts read glyph outlines straight from mTtfData, so the buffer is
+// kept for the lifetime of the driver.
+//
+STATIC VOID       *mTtfData      = NULL;
+STATIC UINTN      mTtfDataSize   = 0;
+STATIC BOOLEAN    mTtfLoadTried  = FALSE;
+STATIC lv_font_t  *mTtfFontTitle = NULL;
+STATIC lv_font_t  *mTtfFontBody  = NULL;
+
+STATIC
+VOID
+LvglThemeLoadTtfFonts (
+  VOID
+  );
 
 VOID
 EFIAPI
@@ -34,6 +55,8 @@ LvglThemeInitFromUiScale (
       mScaleDen = 1;
       break;
   }
+
+  LvglThemeLoadTtfFonts ();
 }
 
 UINT32
@@ -45,9 +68,9 @@ LvglThemePx (
   return (UINT32)(((UINT64)BasePx * (UINT64)mScaleNum) / (UINT64)mScaleDen);
 }
 
+STATIC
 const lv_font_t *
-EFIAPI
-LvglThemeFontTitle (
+LvglThemeMontserratTitle (
   VOID
   )
 {
@@ -64,9 +87,9 @@ LvglThemeFontTitle (
   return &lv_font_montserrat_20;
 }
 
+STATIC
 const lv_font_t *
-EFIAPI
-LvglThemeFontBody (
+LvglThemeMontserratBody (
   VOID
   )
 {
@@ -79,6 +102,124 @@ LvglThemeFontBody (
   }
 
   return &lv_font_montserrat_16;
+}
+
+STATIC
+VOID
+LvglThemeFreeTtfFonts (
+  VOID
+  )
+{
+  if (mTtfFontTitle != NULL) {
+    lv_tiny_ttf_destroy (mTtfFontTitle);
+    mTtfFontTitle = NULL;
+  }
+
+  if (mTtfFontBody != NULL) {
+    lv_tiny_ttf_destroy (mTtfFontBody);
+    mTtfFontBody = NULL;
+  }
+}
+
+STATIC
+lv_font_t *
+LvglThemeCreateTtfFont (
+  IN UINT32           Px,
+  IN const lv_font_t  *Fallback
+  )
+{
+  lv_font_t  *Font;
+
+  Font = lv_tiny_ttf_create_data (mTtfData, mTtfDataSize, (int32_t)Px);
+  if (Font == NULL) {
+    return NULL;
+  }
+
+  //
+  // LV_SYMBOL_* glyphs exist only in Montserrat's private-use range.
+  //
+  Font->fallback = Fallback;
+  DEBUG ((
+    DEBUG_INFO,
+    "LvglTheme: TinyTTF %u px, line height %d, base line %d\n",
+    Px,
+    Font->line_height,
+    Font->base_line
+    ));
+  return Font;
+}
+
+//
+// Load the PcdLvglTtfFontFile font once and (re)create the title/body TinyTTF
+// fonts at the current UI scale. Any failure keeps the Montserrat fonts.
+//
+STATIC
+VOID
+LvglThemeLoadTtfFonts (
+  VOID
+  )
+{
+  EFI_GUID    *FileGuid;
+  EFI_STATUS  Status;
+
+  LvglThemeFreeTtfFonts ();
+
+  if (!mTtfLoadTried) {
+    mTtfLoadTried = TRUE;
+    FileGuid      = (EFI_GUID *)PcdGetPtr (PcdLvglTtfFontFile);
+    if (IsZeroGuid (FileGuid)) {
+      DEBUG ((DEBUG_INFO, "LvglTheme: PcdLvglTtfFontFile not set, using Montserrat\n"));
+      return;
+    }
+
+    Status = GetSectionFromAnyFv (FileGuid, EFI_SECTION_RAW, 0, &mTtfData, &mTtfDataSize);
+    if (EFI_ERROR (Status)) {
+      DEBUG ((DEBUG_WARN, "LvglTheme: TTF file %g not found (%r), using Montserrat\n", FileGuid, Status));
+      mTtfData = NULL;
+      return;
+    }
+
+    DEBUG ((DEBUG_INFO, "LvglTheme: TTF file %g, %lu bytes\n", FileGuid, (UINT64)mTtfDataSize));
+  }
+
+  if (mTtfData == NULL) {
+    return;
+  }
+
+  mTtfFontTitle = LvglThemeCreateTtfFont (LvglThemePx (20), LvglThemeMontserratTitle ());
+  mTtfFontBody  = LvglThemeCreateTtfFont (LvglThemePx (16), LvglThemeMontserratBody ());
+  if ((mTtfFontTitle == NULL) || (mTtfFontBody == NULL)) {
+    DEBUG ((DEBUG_WARN, "LvglTheme: TinyTTF font creation failed, using Montserrat\n"));
+    LvglThemeFreeTtfFonts ();
+    FreePool (mTtfData);
+    mTtfData = NULL;
+  }
+}
+
+const lv_font_t *
+EFIAPI
+LvglThemeFontTitle (
+  VOID
+  )
+{
+  if (mTtfFontTitle != NULL) {
+    return mTtfFontTitle;
+  }
+
+  return LvglThemeMontserratTitle ();
+}
+
+const lv_font_t *
+EFIAPI
+LvglThemeFontBody (
+  VOID
+  )
+{
+  if (mTtfFontBody != NULL) {
+    return mTtfFontBody;
+  }
+
+  return LvglThemeMontserratBody ();
 }
 
 const lv_font_t *

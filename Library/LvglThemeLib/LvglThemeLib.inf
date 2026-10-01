@@ -23,6 +23,14 @@
 
 [LibraryClasses]
   BaseLib
+  BaseMemoryLib
+  DebugLib
+  DxeServicesLib
+  MemoryAllocationLib
+  PcdLib
+
+[Pcd]
+  gLvglPkgTokenSpaceGuid.PcdLvglTtfFontFile    ## CONSUMES
 
 [BuildOptions]
   GCC:*_*_*_CC_FLAGS = -I$(WORKSPACE)/LvglPkg/Library/LvglLib
