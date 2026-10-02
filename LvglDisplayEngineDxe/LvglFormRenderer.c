@@ -12,7 +12,7 @@
 **/
 
 #include "LvglFormRenderer.h"
-#include "LvglAptioChrome.h"
+#include <Library/LvglChromeLib.h>
 #include "LvglTextPopup.h"
 #include <LvglTheme.h>
 #include <Library/LvglUiConfigLib.h>
@@ -44,7 +44,7 @@ STATIC FORM_DISPLAY_ENGINE_STATEMENT  *mNavStatement[LVGL_NAV_MAX];
 STATIC UINTN                          mNavCount = 0;
 
 //
-// Scrollable form rows panel from AptioBuildChrome(). Used to restore the top
+// Scrollable form rows panel from LvglChromeBuild(). Used to restore the top
 // of the view (banner / labels above the first controls) when focus returns
 // to rows in the upper portion of the form.
 //
@@ -770,6 +770,7 @@ OnDropdownOpened (
   if (List != NULL) {
     lv_obj_set_width (List, LV_SIZE_CONTENT);
     LvglThemeStyleDropdownList (List);
+    LvglChromeStyleWidget (List, LvglChromePartDropdownList);
   }
 }
 
@@ -1035,6 +1036,8 @@ CreateDialogShell (
   lv_label_set_text (TitleLbl, Title);
   THEME_APPLY_POPUP_FONT (TitleLbl);
   lv_obj_set_style_text_color (TitleLbl, lv_color_hex (THEME_COLOR_TEXT_TITLE), 0);
+  LvglChromeStyleWidget (Shell->Card, LvglChromePartDialogPanel);
+  LvglChromeStyleWidget (TitleLbl, LvglChromePartDialogTitle);
 
   Sep = lv_obj_create (Shell->Card);
   lv_obj_set_size (Sep, LV_PCT (100), THEME_BORDER_PANE);
@@ -1076,6 +1079,7 @@ CreateDialogMessageLabel (
   lv_label_set_text (MsgLbl, Text);
   lv_obj_set_style_text_color (MsgLbl, lv_color_hex (THEME_COLOR_TEXT_POPUP), 0);
   THEME_APPLY_BODY_FONT (MsgLbl);
+  LvglChromeStyleWidget (MsgLbl, LvglChromePartDialogMessage);
   return MsgLbl;
 }
 
@@ -1340,6 +1344,7 @@ ShowPopup (
     lv_label_set_text (Lbl, ConfirmText);
   }
   LvglThemeStyleButtonLabel (ConfirmBtn, Lbl);
+  LvglChromeStyleWidget (ConfirmBtn, LvglChromePartDialogButton);
   lv_obj_add_event_cb (ConfirmBtn, OnPopupBtn, LV_EVENT_CLICKED, &mPopupConfirmAction);
   lv_obj_add_event_cb (ConfirmBtn, OnPopupKey, LV_EVENT_KEY, NULL);
   lv_group_add_obj (Group, ConfirmBtn);
@@ -1354,6 +1359,7 @@ ShowPopup (
     Lbl        = lv_label_create (DiscardBtn);
     lv_label_set_text (Lbl, "Discard (N)");
     LvglThemeStyleButtonLabel (DiscardBtn, Lbl);
+    LvglChromeStyleWidget (DiscardBtn, LvglChromePartDialogButton);
     lv_obj_add_event_cb (DiscardBtn, OnPopupBtn, LV_EVENT_CLICKED, &mDiscardAction);
     lv_obj_add_event_cb (DiscardBtn, OnPopupKey, LV_EVENT_KEY, NULL);
     lv_group_add_obj (Group, DiscardBtn);
@@ -1367,6 +1373,7 @@ ShowPopup (
   Lbl       = lv_label_create (CancelBtn);
   lv_label_set_text (Lbl, "Cancel (Esc)");
   LvglThemeStyleButtonLabel (CancelBtn, Lbl);
+  LvglChromeStyleWidget (CancelBtn, LvglChromePartDialogButton);
   lv_obj_add_event_cb (CancelBtn, OnPopupBtn, LV_EVENT_CLICKED, &mNoneAction);
   lv_obj_add_event_cb (CancelBtn, OnPopupKey, LV_EVENT_KEY, NULL);
   lv_group_add_obj (Group, CancelBtn);
@@ -2393,12 +2400,12 @@ OnFocusUpdateHelp (
   if ((Ctx == NULL) || (Ctx->Statement == NULL) ||
       (mSession.FormData == NULL) || (mSession.FormData->HiiHandle == NULL))
   {
-    AptioSetHelpText ("");
+    LvglChromeSetHelpText ("");
     return;
   }
 
   Utf8 = GetHelpUtf8 (Ctx->Statement, mSession.FormData->HiiHandle);
-  AptioSetHelpText (Utf8 != NULL ? Utf8 : "");
+  LvglChromeSetHelpText (Utf8 != NULL ? Utf8 : "");
   if (Utf8 != NULL) {
     FreePool (Utf8);
   }
@@ -2431,7 +2438,7 @@ OnHoverUpdateHelp (
   }
 
   Utf8 = GetHelpUtf8 (Ctx->Statement, mSession.FormData->HiiHandle);
-  AptioSetHelpText (Utf8 != NULL ? Utf8 : "");
+  LvglChromeSetHelpText (Utf8 != NULL ? Utf8 : "");
   if (Utf8 != NULL) {
     FreePool (Utf8);
   }
@@ -2588,6 +2595,8 @@ StyleRow (
 
   // disabled: whole-row muted text, no opacity fade.
   lv_obj_set_style_text_color (Row, lv_color_hex (THEME_COLOR_ROW_TEXT_DISABLED), LV_STATE_DISABLED);
+
+  LvglChromeStyleRow (Row);
 }
 
 //
@@ -2716,6 +2725,7 @@ CreateSubtitleWidget (
   THEME_APPLY_BODY_FONT (Label);
   lv_obj_set_style_text_color (Label, lv_palette_main (THEME_ACCENT_PALETTE), 0);
   lv_obj_set_style_pad_top (Label, THEME_PAD_LABEL_TOP, 0);
+  LvglChromeStyleWidget (Label, LvglChromePartSubtitle);
 
   FreePool (Text);
 }
@@ -2758,11 +2768,13 @@ CreateTextWidget (
   lv_label_set_text (PromptLabel, Prompt);
   lv_obj_set_flex_grow (PromptLabel, 1);
   LvglThemeApplyBodyFont (PromptLabel);
+  LvglChromeStyleWidget (PromptLabel, LvglChromePartPrompt);
 
   if (ValueUtf8 != NULL) {
     ValueLabel = lv_label_create (Row);
     lv_label_set_text (ValueLabel, ValueUtf8);
     LvglThemeApplyBodyFont (ValueLabel);
+    LvglChromeStyleWidget (ValueLabel, LvglChromePartValueText);
     FreePool (ValueUtf8);
   }
 
@@ -2847,6 +2859,8 @@ CreateBannerWidget (
       lv_obj_set_style_text_align (Label, LV_TEXT_ALIGN_LEFT, 0);
       break;
   }
+
+  LvglChromeStyleWidget (Label, LvglChromePartBanner);
 
   //
   // Register the label so BannerRefreshTimerCb can keep it in sync with its
@@ -2938,6 +2952,7 @@ CreateCheckboxWidget (
   lv_label_set_text (Label, Text != NULL ? Text : "Checkbox");
   lv_obj_set_flex_grow (Label, 1);
   LvglThemeApplyBodyFont (Label);
+  LvglChromeStyleWidget (Label, LvglChromePartPrompt);
 
   //
   // The checkbox itself renders the indicator only; its prompt text is
@@ -2948,6 +2963,7 @@ CreateCheckboxWidget (
   lv_obj_set_style_bg_opa (Cb, LV_OPA_TRANSP, LV_PART_MAIN);
   lv_obj_set_style_border_width (Cb, 0, LV_PART_MAIN);
   LvglThemeStyleCheckbox (Cb);
+  LvglChromeStyleWidget (Cb, LvglChromePartCheckbox);
 
   if (Statement->CurrentValue.Value.b) {
     lv_obj_add_state (Cb, LV_STATE_CHECKED);
@@ -3007,6 +3023,7 @@ CreateNumericWidget (
   lv_label_set_text (Label, Text != NULL ? Text : "Numeric");
   lv_obj_set_flex_grow (Label, 1);
   LvglThemeApplyBodyFont (Label);
+  LvglChromeStyleWidget (Label, LvglChromePartPrompt);
 
   NumOp = (EFI_IFR_NUMERIC *)Statement->OpCode;
   GetNumericRange (NumOp, &MinVal, &MaxVal);
@@ -3039,6 +3056,7 @@ CreateNumericWidget (
   Uint64ToAsciiDecimal (CurVal, Initial, sizeof (Initial));
   lv_textarea_set_text (Ta, Initial);
   LvglThemeStyleTextarea (Ta);
+  LvglChromeStyleWidget (Ta, LvglChromePartNumeric);
 
   if (Statement->Attribute & HII_DISPLAY_GRAYOUT) {
     lv_obj_add_state (Row, LV_STATE_DISABLED);
@@ -3101,6 +3119,7 @@ CreateDateTimeField (
   //
   lv_obj_set_width (Ta, (lv_coord_t)LvglThemeDateTimeFieldWidth (Digits));
   LvglThemeStyleTextarea (Ta);
+  LvglChromeStyleWidget (Ta, LvglChromePartDateTimeField);
 
   lv_obj_add_event_cb (Ta, OnDateTimeReady, LV_EVENT_READY, DtCtx);
 
@@ -3154,6 +3173,7 @@ CreateDateTimeWidget (
   lv_label_set_text (Label, Text != NULL ? Text : (IsDate ? "Date" : "Time"));
   lv_obj_set_flex_grow (Label, 1);
   LvglThemeApplyBodyFont (Label);
+  LvglChromeStyleWidget (Label, LvglChromePartPrompt);
 
   if (IsDate) {
     C0           = ClampU64 (Statement->CurrentValue.Value.date.Month, 1, 12);
@@ -3283,6 +3303,7 @@ CreateOneOfWidget (
   lv_label_set_text (Label, Text != NULL ? Text : "OneOf");
   lv_obj_set_flex_grow (Label, 1);
   LvglThemeApplyBodyFont (Label);
+  LvglChromeStyleWidget (Label, LvglChromePartPrompt);
 
   //
   // Build newline-separated option string for LVGL dropdown.
@@ -3360,6 +3381,7 @@ CreateOneOfWidget (
   lv_dropdown_set_options (Dd, OptBuf);
   lv_dropdown_set_selected (Dd, SelectedIdx);
   LvglThemeStyleDropdown (Dd);
+  LvglChromeStyleWidget (Dd, LvglChromePartDropdown);
 
   //
   // Pixel-width estimate so the closed button fits its longest option:
@@ -3462,10 +3484,12 @@ CreateOrderedListWidget (
   lv_obj_set_style_text_color (Panel, lv_color_hex (
       Grayout ? THEME_COLOR_ROW_TEXT_DISABLED : THEME_COLOR_TEXT_PRIMARY), 0);
   THEME_APPLY_BODY_FONT (Panel);
+  LvglChromeStyleWidget (Panel, LvglChromePartOrderedList);
 
   Header = lv_label_create (Panel);
   lv_label_set_text (Header, PromptText != NULL ? PromptText : "Ordered List");
   THEME_APPLY_BODY_FONT (Header);
+  LvglChromeStyleWidget (Header, LvglChromePartPrompt);
 
   for (i = 0; i < ActiveCount; i++) {
     Value = GetArrayData (Statement->CurrentValue.Buffer, ValueType, i);
@@ -3613,6 +3637,7 @@ CreateStringWidget (
   lv_label_set_text (Label, Text != NULL ? Text : "String");
   lv_obj_set_flex_grow (Label, 1);
   LvglThemeApplyBodyFont (Label);
+  LvglChromeStyleWidget (Label, LvglChromePartPrompt);
 
   Ta = lv_textarea_create (Row);
   lv_textarea_set_one_line (Ta, true);
@@ -3639,6 +3664,7 @@ CreateStringWidget (
   }
 
   LvglThemeStyleTextarea (Ta);
+  LvglChromeStyleWidget (Ta, LvglChromePartTextarea);
 
   if (Statement->Attribute & HII_DISPLAY_GRAYOUT) {
     lv_obj_add_state (Row, LV_STATE_DISABLED);
@@ -3691,11 +3717,13 @@ CreateRefWidget (
   Btn = lv_btn_create (Parent);
   StyleRow (Btn);
   lv_obj_set_style_text_align (Btn, LV_TEXT_ALIGN_LEFT, 0);
+  LvglChromeStyleWidget (Btn, LvglChromePartRefButton);
 
   Label = lv_label_create (Btn);
   lv_label_set_text (Label, Text != NULL ? Text : "Goto");
   lv_obj_align (Label, LV_ALIGN_LEFT_MID, 0, 0);
   LvglThemeApplyBodyFont (Label);
+  LvglChromeStyleWidget (Label, LvglChromePartRefLabel);
 
   if (Statement->Attribute & HII_DISPLAY_GRAYOUT) {
     lv_obj_add_state (Btn, LV_STATE_DISABLED);
@@ -3930,7 +3958,7 @@ LvglRenderForm (
   // Tear down any chrome-owned timers from the previous form before we
   // build a new one (LVGL timers are not children of the screen object).
   //
-  AptioChromeTeardown ();
+  LvglChromeTeardown ();
 
   //
   // Set up session state.
@@ -3967,11 +3995,11 @@ LvglRenderForm (
 
   //
   // Create a new screen and the AMI Aptio-style chrome around it.
-  // AptioBuildChrome returns the inner content panel; form widgets are
+  // LvglChromeBuild returns the inner content panel; form widgets are
   // appended to that panel below.
   //
   mSession.Screen = lv_obj_create (NULL);
-  ContentPanel    = AptioBuildChrome (mSession.Screen, FormData);
+  ContentPanel    = LvglChromeBuild (mSession.Screen, FormData);
   mContentPanel   = ContentPanel;
 
   //
@@ -4305,6 +4333,7 @@ AddHiiPopupButton (
   Lbl = lv_label_create (Btn);
   lv_label_set_text (Lbl, Label);
   LvglThemeStyleButtonLabel (Btn, Lbl);
+  LvglChromeStyleWidget (Btn, LvglChromePartDialogButton);
   lv_obj_add_event_cb (Btn, OnHiiPopupBtn, LV_EVENT_CLICKED, (void *)(UINTN)(Selection + 1));
   lv_obj_add_event_cb (Btn, OnHiiPopupKey, LV_EVENT_KEY, NULL);
   lv_group_add_obj (Group, Btn);
@@ -4466,7 +4495,7 @@ LvglRendererCleanup (
   VOID
   )
 {
-  AptioChromeTeardown ();
+  LvglChromeTeardown ();
 
   if (mBannerTimer != NULL) {
     lv_timer_delete (mBannerTimer);

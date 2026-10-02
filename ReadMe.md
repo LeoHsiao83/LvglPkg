@@ -64,11 +64,11 @@ LvglPkg/
 |   `--- lvgl/                  Upstream LVGL source (submodule)
 +--- Library/LvglThemeLib/      Runtime UI-scale font/metric helpers
 +--- Library/LvglUiConfigLib/   NVRAM/PCD UI configuration helpers
++--- Library/LvglAptioChromeLib/ Default Aptio-style Setup chrome (LvglChromeLib)
 +--- LvglDisplayEngineDxe/      Display engine DXE driver (the main deliverable)
 |   +--- LvglDisplayEngineDxe.c Text engine hot-patch, entry/unload
 |   +--- LvglFormRenderer.c     FormDisplay() -> LVGL widget builder + event loop
 |   +--- LvglFormRenderer.h     Renderer types and API
-|   +--- LvglAptioChrome.c/.h   Aptio-style chrome (header/footer/nav bar)
 |   `--- AptioWallpaper.c       Background image data
 +--- LvglSetupDxe/              Graphical UI Configuration setup form
 +--- Include/                   Public headers (LvglLib.h, LvglTheme.h, ...)
@@ -140,6 +140,7 @@ class for its runtime UI-scale font/metric helpers. Map it in
 `[LibraryClasses]`:
 ```
 LvglThemeLib|LvglPkg/Library/LvglThemeLib/LvglThemeLib.inf
+LvglChromeLib|LvglPkg/Library/LvglAptioChromeLib/LvglAptioChromeLib.inf
 ```
 
 ### 2. FDF -- add the display engine to the firmware image

@@ -124,4 +124,35 @@ LvglThemeStyleCursor (
   IN lv_obj_t  *CursorImg
   );
 
+
+/**
+  Return the platform TrueType font at exactly Px pixels, not scaled by the
+  UI scale. Fonts are created on first use and kept for the driver lifetime.
+
+  @param[in] Px  Pixel height.
+
+  @return The TTF font, or the closest compiled-in Montserrat font when no
+          TTF is loaded or the cache is full. Never NULL.
+**/
+const lv_font_t *
+EFIAPI
+LvglThemeFontPx (
+  IN UINT32  Px
+  );
+
+
+/**
+  Load a PNG stored as the RAW section of FREEFORM file FileGuid in any FV and
+  return an image source for lv_image_set_src(). The descriptor and the file
+  data are kept for the driver lifetime.
+
+  @param[in] FileGuid  FFS file name.
+
+  @retval NULL  File not found or not a PNG; the caller draws its fallback.
+**/
+CONST lv_image_dsc_t *
+EFIAPI
+LvglThemeImageFromFv (
+  IN CONST EFI_GUID  *FileGuid
+  );
 #endif // LVGL_THEME_LIB_H_

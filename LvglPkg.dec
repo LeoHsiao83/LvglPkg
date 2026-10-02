@@ -15,6 +15,7 @@
 [LibraryClasses]
   LvglLib|Include/Library/LvglLib.h
   LvglThemeLib|Include/Library/LvglThemeLib.h
+  LvglChromeLib|Include/Library/LvglChromeLib.h
 
 [Guids]
   ## LVGL UI configuration formset / variable GUID

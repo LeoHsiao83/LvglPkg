@@ -14,6 +14,7 @@
 [LibraryClasses]
   LvglLib|LvglPkg/Library/LvglLib/LvglLib.inf
   LvglThemeLib|LvglPkg/Library/LvglThemeLib/LvglThemeLib.inf
+  LvglChromeLib|LvglPkg/Library/LvglAptioChromeLib/LvglAptioChromeLib.inf
   LvglUiConfigLib|LvglPkg/Library/LvglUiConfigLib/LvglUiConfigLib.inf
 
 [Components]

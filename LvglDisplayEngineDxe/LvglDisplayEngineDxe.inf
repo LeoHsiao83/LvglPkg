@@ -24,8 +24,6 @@
   LvglDisplayEngineDxe.c
   LvglFormRenderer.c
   LvglFormRenderer.h
-  LvglAptioChrome.c
-  LvglAptioChrome.h
   LvglTextPopup.c
   LvglTextPopup.h
   LvglTextPopupScene.c
@@ -49,6 +47,7 @@
   PcdLib
   LvglUiConfigLib
   LvglThemeLib
+  LvglChromeLib
   LvglLib
 
 [Guids]
@@ -69,7 +68,3 @@
 [Depex]
   gEdkiiFormDisplayEngineProtocolGuid AND gEfiHiiPopupProtocolGuid AND gEfiHiiDatabaseProtocolGuid AND gEfiHiiConfigRoutingProtocolGuid
 
-[Pcd]
-  gLvglPkgTokenSpaceGuid.PcdLvglHelpPaneWidthPct
-  gLvglPkgTokenSpaceGuid.PcdLvglAptioHeaderTitle
-  gLvglPkgTokenSpaceGuid.PcdLvglAptioHeaderVendor

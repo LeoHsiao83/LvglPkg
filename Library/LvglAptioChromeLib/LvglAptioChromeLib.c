@@ -2,11 +2,13 @@
   AMI Aptio-style chrome implementation.
 
   Copyright (c) 2024-2026, Hamit Karaca. All rights reserved.<BR>
+  Copyright (c) 2026, LeoHsiao83. All rights reserved.<BR>
   SPDX-License-Identifier: BSD-2-Clause-Patent
 **/
 
-#include "LvglAptioChrome.h"
+#include <Library/LvglChromeLib.h>
 #include <LvglTheme.h>
+#include <Library/LvglThemeLib.h>
 #include <Library/BaseLib.h>
 #include <Library/BaseMemoryLib.h>
 #include <Library/DebugLib.h>
@@ -132,6 +134,7 @@ BuildHeader (
   lv_obj_set_style_text_font (Title, THEME_FONT_TITLE, 0);
   lv_obj_set_style_text_color (Title, lv_color_hex (THEME_COLOR_HEADER_TEXT), 0);
   lv_obj_align (Title, LV_ALIGN_LEFT_MID, 0, 0);
+
 
   // Center: vendor / version (dimmed)
   Vendor = lv_label_create (Bar);
@@ -452,7 +455,7 @@ BuildFooter (
 
 lv_obj_t *
 EFIAPI
-AptioBuildChrome (
+LvglChromeBuild (
   IN lv_obj_t                    *Screen,
   IN FORM_DISPLAY_ENGINE_FORM    *FormData
   )
@@ -614,7 +617,7 @@ AptioBuildChrome (
 
 VOID
 EFIAPI
-AptioChromeTeardown (
+LvglChromeTeardown (
   VOID
   )
 {
@@ -628,7 +631,7 @@ AptioChromeTeardown (
 
 VOID
 EFIAPI
-AptioSetHelpText (
+LvglChromeSetHelpText (
   IN CONST CHAR8  *Utf8
   )
 {
@@ -636,4 +639,31 @@ AptioSetHelpText (
     return;
   }
   lv_label_set_text (mHelpLabel, (Utf8 != NULL) ? Utf8 : "");
+}
+
+
+/**
+  Default Aptio chrome leaves row styling to the renderer and LvglTheme.h.
+**/
+VOID
+EFIAPI
+LvglChromeStyleRow (
+  IN lv_obj_t  *Row
+  )
+{
+  (VOID)Row;
+}
+
+/**
+  Default Aptio chrome leaves widget styling to the renderer and LvglTheme.h.
+**/
+VOID
+EFIAPI
+LvglChromeStyleWidget (
+  IN lv_obj_t          *Obj,
+  IN LVGL_CHROME_PART  Part
+  )
+{
+  (VOID)Obj;
+  (VOID)Part;
 }

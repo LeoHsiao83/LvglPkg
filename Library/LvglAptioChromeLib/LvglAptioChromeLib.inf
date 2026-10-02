@@ -1,0 +1,51 @@
+## @file
+#  Default Aptio-style Setup chrome (LvglChromeLib class).
+#
+#  Copyright (c) 2024-2026, Hamit Karaca. All rights reserved.<BR>
+#  Copyright (c) 2026, LeoHsiao83. All rights reserved.<BR>
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+#
+##
+
+[Defines]
+  INF_VERSION     = 0x0001001B
+  BASE_NAME       = LvglAptioChromeLib
+  FILE_GUID       = 64F54E0B-525F-4B6A-964B-529A45A11EE0
+  MODULE_TYPE     = DXE_DRIVER
+  VERSION_STRING  = 1.0
+  LIBRARY_CLASS   = LvglChromeLib|DXE_DRIVER UEFI_APPLICATION
+
+[Sources]
+  LvglAptioChromeLib.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+  LvglPkg/LvglPkg.dec
+
+[LibraryClasses]
+  BaseLib
+  BaseMemoryLib
+  DebugLib
+  PcdLib
+  UefiRuntimeServicesTableLib
+  HiiLib
+  MemoryAllocationLib
+  PrintLib
+  LvglUiConfigLib
+  LvglThemeLib
+  LvglLib
+
+[Guids]
+  gEfiIfrTianoGuid                      ## CONSUMES ## GUID (front-page banner opcodes)
+  gLvglUiConfigFormSetGuid              ## CONSUMES
+
+[Pcd]
+  gLvglPkgTokenSpaceGuid.PcdLvglHelpPaneWidthPct
+  gLvglPkgTokenSpaceGuid.PcdLvglAptioHeaderTitle
+  gLvglPkgTokenSpaceGuid.PcdLvglAptioHeaderVendor
+
+[BuildOptions]
+  # Same LVGL header warnings as LvglDisplayEngineDxe.inf / LvglThemeLib.inf.
+  GCC:*_*_*_CC_FLAGS = -I$(WORKSPACE)/LvglPkg/Library/LvglLib
+  MSFT:*_*_*_CC_FLAGS = /I$(WORKSPACE)/LvglPkg/Library/LvglLib /wd4244 /wd4204 /wd4389 /wd4221 /wd4800 /wd4267 /wd4018 /wd4047 /wd4245 /wd4003 /wd4702 /wd4718 /wd4706 /wd4819 /wd4028 /wd5287
