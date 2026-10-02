@@ -428,6 +428,19 @@ IsStatementInCurrentForm (
 }
 
 /**
+  Return TRUE when FormData is the UiApp front page formset.
+**/
+STATIC
+BOOLEAN
+IsFrontPageFormData (
+  IN CONST FORM_DISPLAY_ENGINE_FORM  *FormData
+  )
+{
+  return (FormData != NULL) &&
+         CompareGuid (&FormData->FormSetGuid, &mFrontPageFormSetGuid);
+}
+
+/**
   Return TRUE when the form currently displayed is the UiApp front page.
   ESC is a no-op there (see mFrontPageFormSetGuid).
 **/
@@ -437,8 +450,177 @@ IsFrontPageForm (
   VOID
   )
 {
-  return (mSession.FormData != NULL) &&
-         CompareGuid (&mSession.FormData->FormSetGuid, &mFrontPageFormSetGuid);
+  return IsFrontPageFormData (mSession.FormData);
+}
+
+/**
+  Return TRUE when Opcode carries an EFI_IFR_QUESTION_HEADER.
+  Unknown opcodes are treated as non-questions (skip; do not guess).
+**/
+STATIC
+BOOLEAN
+OpcodeHasQuestionHeader (
+  IN UINT8  Op
+  )
+{
+  switch (Op) {
+    case EFI_IFR_ONE_OF_OP:
+    case EFI_IFR_CHECKBOX_OP:
+    case EFI_IFR_NUMERIC_OP:
+    case EFI_IFR_ORDERED_LIST_OP:
+    case EFI_IFR_STRING_OP:
+    case EFI_IFR_PASSWORD_OP:
+    case EFI_IFR_DATE_OP:
+    case EFI_IFR_TIME_OP:
+    case EFI_IFR_ACTION_OP:
+    case EFI_IFR_REF_OP:
+      return TRUE;
+    default:
+      return FALSE;
+  }
+}
+
+/**
+  Count entries on a LIST_ENTRY head.
+**/
+STATIC
+UINTN
+CountListEntries (
+  IN CONST LIST_ENTRY  *Head
+  )
+{
+  UINTN       Count;
+  LIST_ENTRY  *Link;
+
+  Count = 0;
+  if (Head == NULL) {
+    return 0;
+  }
+
+  for (Link = Head->ForwardLink; Link != Head; Link = Link->ForwardLink) {
+    Count++;
+  }
+
+  return Count;
+}
+
+/**
+  DEBUG-only FormDisplay diagnostics: form line, and on the front page
+  dump REF / CALLBACK question items. Must not run in RELEASE (HiiGetString).
+**/
+STATIC
+VOID
+DumpFormDiagnostics (
+  IN FORM_DISPLAY_ENGINE_FORM  *FormData
+  )
+{
+  CHAR16                         *Title16;
+  CHAR8                          *Title8;
+  UINTN                          StatementCount;
+  UINTN                          HotkeyCount;
+  LIST_ENTRY                     *Link;
+  FORM_DISPLAY_ENGINE_STATEMENT  *Statement;
+  EFI_IFR_OP_HEADER              *OpHeader;
+  EFI_IFR_QUESTION_HEADER        *Question;
+  EFI_IFR_REF                    *Ref;
+  EFI_IFR_REF3                   *Ref3;
+  EFI_GUID                       ZeroGuid;
+  EFI_GUID                       FormSetGuidCopy;
+  EFI_GUID                       *FormSetGuid;
+  CHAR8                          *Prompt8;
+
+  Title16 = HiiGetString (FormData->HiiHandle, FormData->FormTitle, NULL);
+  Title8  = Ucs2ToUtf8 (Title16);
+  if (Title16 != NULL) {
+    FreePool (Title16);
+  }
+
+  StatementCount = CountListEntries (&FormData->StatementListHead);
+  HotkeyCount    = CountListEntries (&FormData->HotKeyListHead);
+
+  DEBUG ((
+    DEBUG_INFO,
+    "LvglRenderer: form %g id=0x%x \"%a\" statements=%u hotkeys=%u changed=%u\n",
+    &FormData->FormSetGuid,
+    FormData->FormId,
+    (Title8 != NULL) ? Title8 : "",
+    (UINT32)StatementCount,
+    (UINT32)HotkeyCount,
+    (UINT32)FormData->SettingChangedFlag
+    ));
+
+  if (Title8 != NULL) {
+    FreePool (Title8);
+  }
+
+  if (!IsFrontPageFormData (FormData)) {
+    return;
+  }
+
+  ZeroMem (&ZeroGuid, sizeof (ZeroGuid));
+
+  for (Link = FormData->StatementListHead.ForwardLink;
+       Link != &FormData->StatementListHead;
+       Link = Link->ForwardLink)
+  {
+    Statement = FORM_DISPLAY_ENGINE_STATEMENT_FROM_LINK (Link);
+    if ((Statement == NULL) || (Statement->OpCode == NULL)) {
+      continue;
+    }
+
+    OpHeader = Statement->OpCode;
+
+    if (OpHeader->OpCode == EFI_IFR_REF_OP) {
+      Ref         = (EFI_IFR_REF *)OpHeader;
+      FormSetGuid = &ZeroGuid;
+      if (OpHeader->Length >= sizeof (EFI_IFR_REF3)) {
+        Ref3 = (EFI_IFR_REF3 *)OpHeader;
+        // Copy out via OFFSET_OF: FormSetId may be unaligned in packed IFR.
+        CopyMem (
+          &FormSetGuidCopy,
+          (UINT8 *)Ref3 + OFFSET_OF (EFI_IFR_REF3, FormSetId),
+          sizeof (FormSetGuidCopy)
+          );
+        FormSetGuid = &FormSetGuidCopy;
+      }
+
+      Prompt8 = GetPromptUtf8 (Statement, FormData->HiiHandle);
+      DEBUG ((
+        DEBUG_INFO,
+        "LvglRenderer:   ref qid=0x%04x formset=%g formid=0x%x \"%a\"\n",
+        Ref->Question.QuestionId,
+        FormSetGuid,
+        Ref->FormId,
+        (Prompt8 != NULL) ? Prompt8 : ""
+        ));
+      if (Prompt8 != NULL) {
+        FreePool (Prompt8);
+      }
+
+      continue;
+    }
+
+    if (!OpcodeHasQuestionHeader (OpHeader->OpCode)) {
+      continue;
+    }
+
+    Question = (EFI_IFR_QUESTION_HEADER *)((UINT8 *)OpHeader + sizeof (EFI_IFR_OP_HEADER));
+    if ((Question->Flags & EFI_IFR_FLAG_CALLBACK) == 0) {
+      continue;
+    }
+
+    Prompt8 = GetPromptUtf8 (Statement, FormData->HiiHandle);
+    DEBUG ((
+      DEBUG_INFO,
+      "LvglRenderer:   item op=0x%02x qid=0x%04x \"%a\"\n",
+      OpHeader->OpCode,
+      Question->QuestionId,
+      (Prompt8 != NULL) ? Prompt8 : ""
+      ));
+    if (Prompt8 != NULL) {
+      FreePool (Prompt8);
+    }
+  }
 }
 
 /**
@@ -3737,6 +3919,14 @@ LvglRenderForm (
   LvglTpFormEnter ();
 
   //
+  // FormDisplay diagnostics (DEBUG only). Must run before any LVGL objects
+  // are built, and before mSession.FormData is set (use FormData directly).
+  //
+  DEBUG_CODE (
+    DumpFormDiagnostics (FormData);
+    );
+
+  //
   // Tear down any chrome-owned timers from the previous form before we
   // build a new one (LVGL timers are not children of the screen object).
   //
@@ -3928,7 +4118,25 @@ LvglRenderForm (
   //
   lv_uefi_keypad_drain ();
 
-  DEBUG ((DEBUG_INFO, "LvglRenderer: exiting event loop -- Action=0x%x\n", UserInputData->Action));
+  {
+    EFI_QUESTION_ID  ExitQid;
+
+    ExitQid = 0;
+    if ((UserInputData->SelectedStatement != NULL) &&
+        (UserInputData->SelectedStatement->OpCode != NULL) &&
+        OpcodeHasQuestionHeader (UserInputData->SelectedStatement->OpCode->OpCode))
+    {
+      ExitQid = ((EFI_IFR_QUESTION_HEADER *)((UINT8 *)UserInputData->SelectedStatement->OpCode + sizeof (EFI_IFR_OP_HEADER)))->QuestionId;
+      DEBUG ((
+        DEBUG_INFO,
+        "LvglRenderer: exiting event loop -- Action=0x%x QuestionId=0x%04x\n",
+        UserInputData->Action,
+        ExitQid
+        ));
+    } else {
+      DEBUG ((DEBUG_INFO, "LvglRenderer: exiting event loop -- Action=0x%x\n", UserInputData->Action));
+    }
+  }
 
   return EFI_SUCCESS;
 }
