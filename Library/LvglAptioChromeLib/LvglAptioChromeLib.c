@@ -239,7 +239,8 @@ VOID
 BuildSubtitleBar (
   IN lv_obj_t                    *Screen,
   IN FORM_DISPLAY_ENGINE_FORM    *FormData,
-  IN BOOLEAN                     SubtitleShowsDeviceModel
+  IN BOOLEAN                     SubtitleShowsDeviceModel,
+  IN CONST LVGL_TAB_BAR          *Tabs OPTIONAL
   )
 {
   lv_obj_t  *Bar;
@@ -260,6 +261,41 @@ BuildSubtitleBar (
   lv_obj_set_style_pad_top (Bar, 0, 0);
   lv_obj_set_style_pad_bottom (Bar, 0, 0);
   lv_obj_clear_flag (Bar, LV_OBJ_FLAG_SCROLLABLE);
+
+  //
+  // Tab mode: list tab titles on the left (active highlighted). Skip the
+  // form-title / device-model label so the bar stays a single row of tabs.
+  //
+  if ((Tabs != NULL) && (Tabs->Count > 0)) {
+    lv_obj_t  *Row;
+    UINTN     Idx;
+
+    Row = lv_obj_create (Bar);
+    lv_obj_remove_style_all (Row);
+    lv_obj_set_size (Row, LV_SIZE_CONTENT, LV_PCT (100));
+    lv_obj_set_flex_flow (Row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column (Row, 16, 0);
+    lv_obj_set_style_pad_all (Row, 0, 0);
+    lv_obj_set_style_bg_opa (Row, LV_OPA_TRANSP, 0);
+    lv_obj_align (Row, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_clear_flag (Row, LV_OBJ_FLAG_SCROLLABLE);
+
+    for (Idx = 0; Idx < Tabs->Count; Idx++) {
+      Label = lv_label_create (Row);
+      lv_label_set_text (
+        Label,
+        Tabs->Tab[Idx].Title[0] != '\0' ? Tabs->Tab[Idx].Title : "?"
+        );
+      THEME_APPLY_BODY_FONT (Label);
+      if (Idx == Tabs->Active) {
+        lv_obj_set_style_text_color (Label, lv_color_hex (THEME_COLOR_ACCENT), 0);
+      } else {
+        lv_obj_set_style_text_color (Label, lv_color_hex (THEME_COLOR_TEXT_SECONDARY), 0);
+      }
+    }
+
+    return;
+  }
 
   Str16 = NULL;
   Utf8  = NULL;
@@ -453,11 +489,21 @@ BuildFooter (
   }
 }
 
+VOID
+EFIAPI
+LvglChromeAdjustTabs (
+  IN OUT LVGL_TAB_BAR  *Tabs
+  )
+{
+  (VOID)Tabs;
+}
+
 lv_obj_t *
 EFIAPI
 LvglChromeBuild (
   IN lv_obj_t                    *Screen,
-  IN FORM_DISPLAY_ENGINE_FORM    *FormData
+  IN FORM_DISPLAY_ENGINE_FORM    *FormData,
+  IN CONST LVGL_TAB_BAR          *Tabs OPTIONAL
   )
 {
   lv_obj_t                       *Content;
@@ -541,7 +587,7 @@ LvglChromeBuild (
 
   // Header / subtitle / [content row | help pane] / footer in flex order.
   BuildHeader (ChromeRoot);
-  BuildSubtitleBar (ChromeRoot, FormData, (UiConfig.SubtitleShowsDeviceModel != 0));
+  BuildSubtitleBar (ChromeRoot, FormData, (UiConfig.SubtitleShowsDeviceModel != 0), Tabs);
 
   //
   // Middle band: horizontal flex with rows panel on the left and help pane

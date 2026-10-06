@@ -57,3 +57,13 @@
   ## falling back to Montserrat for LV_SYMBOL_* glyphs. All-zero keeps the
   ## built-in Montserrat fonts.
   gLvglPkgTokenSpaceGuid.PcdLvglTtfFontFile|{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 }|VOID*|0x00000009
+
+  ## When TRUE, hide the UiApp front page and show its REF entries as a tab
+  ## bar; LEFT/RIGHT switch tabs. FALSE keeps the front page (original behavior).
+  gLvglPkgTokenSpaceGuid.PcdLvglFrontPageTabs|FALSE|BOOLEAN|0x0000000A
+
+  ## Front-page QuestionId the engine selects to leave Setup (UiApp Continue).
+  gLvglPkgTokenSpaceGuid.PcdLvglFrontPageContinueQuestionId|0x1000|UINT16|0x0000000B
+
+  ## Front-page QuestionId the engine selects to reset (MdeModulePkg UiApp: 0x1001).
+  gLvglPkgTokenSpaceGuid.PcdLvglFrontPageResetQuestionId|0x1001|UINT16|0x0000000C

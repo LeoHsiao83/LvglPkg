@@ -148,6 +148,16 @@ STATIC lv_obj_t   *mPopupPrevFocus    = NULL;
 STATIC UINT32     mNoneAction         = BROWSER_ACTION_NONE;
 
 //
+// Distinguishes F10-style browser-action popups from the Exit Setup confirm (T13).
+//
+typedef enum {
+  LvglPopupPurposeBrowserAction = 0,
+  LvglPopupPurposeExitSetup
+} LVGL_POPUP_PURPOSE;
+
+STATIC LVGL_POPUP_PURPOSE  mPopupPurpose = LvglPopupPurposeBrowserAction;
+
+//
 // EFI_HII_POPUP_PROTOCOL popup state
 // Allows a driver callback to raise a modal Yes/No while a form is displayed.
 //
@@ -169,9 +179,28 @@ STATIC CONST EFI_GUID  mFrontPageFormSetGuid = {
 };
 
 //
+// Front-page tab mode (PcdLvglFrontPageTabs). State survives across FormDisplay.
+//
+typedef enum {
+  LvglFrontActionNone = 0,
+  LvglFrontActionDiscardThenContinue,   // T13
+  LvglFrontActionSelectContinue,        // T13 / T14
+  LvglFrontActionSelectReset,           // T14
+  LvglFrontActionRedrawSaveExit         // T14
+} LVGL_FRONT_ACTION;
+
+STATIC LVGL_TAB_BAR       mTabs;
+STATIC UINTN              mPendingTab           = MAX_UINTN;
+STATIC LVGL_FRONT_ACTION  mPendingFrontAction   = LvglFrontActionNone;
+STATIC EFI_GUID           mTabRootFormSetGuid;
+STATIC UINT16             mTabRootFormId        = 0;
+STATIC BOOLEAN            mNextFormIsTabRoot    = FALSE;
+STATIC BOOLEAN            mTabsEverSelected     = FALSE;
+
+//
 // Forward declarations for widget builders.
 //
-STATIC VOID ShowPopup (lv_group_t *Group, CONST CHAR8 *Title, CONST CHAR8 *ConfirmLabel, UINT32 ConfirmAction, BOOLEAN ShowDiscard);
+STATIC VOID ShowPopup (lv_group_t *Group, CONST CHAR8 *Title, CONST CHAR8 *Message OPTIONAL, CONST CHAR8 *ConfirmLabel, UINT32 ConfirmAction, BOOLEAN ShowDiscard, LVGL_POPUP_PURPOSE Purpose);
 STATIC VOID CreateSubtitleWidget      (lv_obj_t *Parent, FORM_DISPLAY_ENGINE_STATEMENT *Statement, EFI_HII_HANDLE HiiHandle);
 STATIC VOID CreateTextWidget          (lv_obj_t *Parent, FORM_DISPLAY_ENGINE_STATEMENT *Statement, EFI_HII_HANDLE HiiHandle);
 STATIC VOID CreateBannerWidget        (lv_obj_t *Parent, FORM_DISPLAY_ENGINE_STATEMENT *Statement, EFI_HII_HANDLE HiiHandle);
@@ -184,6 +213,9 @@ STATIC VOID CreateRefWidget           (lv_obj_t *Parent, FORM_DISPLAY_ENGINE_STA
 STATIC VOID CreateActionWidget        (lv_obj_t *Parent, FORM_DISPLAY_ENGINE_STATEMENT *Statement, EFI_HII_HANDLE HiiHandle, lv_group_t *Group);
 STATIC VOID CreateDateTimeWidget      (lv_obj_t *Parent, FORM_DISPLAY_ENGINE_STATEMENT *Statement, EFI_HII_HANDLE HiiHandle, lv_group_t *Group, BOOLEAN IsDate);
 STATIC VOID RequestUserExit (IN UINT32 Action, IN UINT16 DefaultId, IN FORM_DISPLAY_ENGINE_STATEMENT *Statement OPTIONAL);
+STATIC VOID StyleRow (lv_obj_t *Row);
+STATIC VOID AddToNavGroup (lv_group_t *Group, lv_obj_t *Widget, LVGL_STATEMENT_CONTEXT *Ctx);
+STATIC BOOLEAN OpcodeHasQuestionHeader (IN UINT8 Op);
 STATIC BOOLEAN CompletePendingLeaveIfReady (VOID);
 STATIC BOOLEAN TryCommitFocusedThenNav (IN UINTN DestNavIdx);
 
@@ -451,6 +483,612 @@ IsFrontPageForm (
   )
 {
   return IsFrontPageFormData (mSession.FormData);
+}
+
+/**
+  Copy UTF-8 into Dest[DestSize], truncating on a character boundary.
+**/
+STATIC
+VOID
+CopyUtf8Trunc (
+  OUT CHAR8        *Dest,
+  IN  UINTN        DestSize,
+  IN  CONST CHAR8  *Src
+  )
+{
+  UINTN  Idx;
+  UINTN  LastSafe;
+
+  if ((Dest == NULL) || (DestSize == 0)) {
+    return;
+  }
+
+  if (Src == NULL) {
+    Dest[0] = '\0';
+    return;
+  }
+
+  LastSafe = 0;
+  for (Idx = 0; (Src[Idx] != '\0') && (Idx + 1 < DestSize); Idx++) {
+    UINT8  B = (UINT8)Src[Idx];
+
+    Dest[Idx] = Src[Idx];
+    // Continuation bytes 10xxxxxx are not safe end points for truncation.
+    if ((B & 0xC0) != 0x80) {
+      LastSafe = Idx;
+    }
+  }
+
+  if ((Src[Idx] == '\0') && (Idx < DestSize)) {
+    Dest[Idx] = '\0';
+    return;
+  }
+
+  Dest[LastSafe] = '\0';
+}
+
+/**
+  Collect front-page REF statements into mTabs and call LvglChromeAdjustTabs.
+  Preserves Active by Kind+QuestionId when possible.
+**/
+STATIC
+VOID
+CollectFrontPageTabs (
+  IN FORM_DISPLAY_ENGINE_FORM  *FormData
+  )
+{
+  LIST_ENTRY                     *Link;
+  FORM_DISPLAY_ENGINE_STATEMENT  *Statement;
+  EFI_IFR_OP_HEADER              *OpHeader;
+  EFI_IFR_REF                    *Ref;
+  EFI_IFR_REF3                   *Ref3;
+  EFI_GUID                       FormSetGuidCopy;
+  LVGL_TAB_KIND                  PrevKind;
+  UINT16                         PrevQid;
+  BOOLEAN                        HadPrev;
+  UINTN                          Idx;
+  CHAR8                          *Prompt8;
+
+  PrevKind = LvglTabKindRef;
+  PrevQid  = 0;
+  HadPrev  = FALSE;
+  if ((mTabs.Count > 0) && (mTabs.Active < mTabs.Count)) {
+    PrevKind = mTabs.Tab[mTabs.Active].Kind;
+    PrevQid  = mTabs.Tab[mTabs.Active].QuestionId;
+    HadPrev  = TRUE;
+  }
+
+  ZeroMem (&mTabs, sizeof (mTabs));
+
+  for (Link = FormData->StatementListHead.ForwardLink;
+       Link != &FormData->StatementListHead;
+       Link = Link->ForwardLink)
+  {
+    Statement = FORM_DISPLAY_ENGINE_STATEMENT_FROM_LINK (Link);
+    if ((Statement == NULL) || (Statement->OpCode == NULL)) {
+      continue;
+    }
+
+    if ((Statement->Attribute & (HII_DISPLAY_SUPPRESS | HII_DISPLAY_GRAYOUT)) != 0) {
+      continue;
+    }
+
+    OpHeader = Statement->OpCode;
+    if (OpHeader->OpCode != EFI_IFR_REF_OP) {
+      continue;
+    }
+
+    if (mTabs.Count >= LVGL_TAB_MAX) {
+      break;
+    }
+
+    Ref = (EFI_IFR_REF *)OpHeader;
+    mTabs.Tab[mTabs.Count].Kind       = LvglTabKindRef;
+    mTabs.Tab[mTabs.Count].QuestionId = Ref->Question.QuestionId;
+    ZeroMem (&mTabs.Tab[mTabs.Count].FormSetGuid, sizeof (EFI_GUID));
+    if (OpHeader->Length >= sizeof (EFI_IFR_REF3)) {
+      Ref3 = (EFI_IFR_REF3 *)OpHeader;
+      CopyMem (
+        &FormSetGuidCopy,
+        (UINT8 *)Ref3 + OFFSET_OF (EFI_IFR_REF3, FormSetId),
+        sizeof (FormSetGuidCopy)
+        );
+      CopyGuid (&mTabs.Tab[mTabs.Count].FormSetGuid, &FormSetGuidCopy);
+    }
+
+    Prompt8 = GetPromptUtf8 (Statement, FormData->HiiHandle);
+    CopyUtf8Trunc (
+      mTabs.Tab[mTabs.Count].Title,
+      sizeof (mTabs.Tab[mTabs.Count].Title),
+      Prompt8
+      );
+    if (Prompt8 != NULL) {
+      FreePool (Prompt8);
+    }
+
+    mTabs.Count++;
+  }
+
+  LvglChromeAdjustTabs (&mTabs);
+
+  mTabs.Active = 0;
+  if (HadPrev) {
+    for (Idx = 0; Idx < mTabs.Count; Idx++) {
+      if ((mTabs.Tab[Idx].Kind == PrevKind) &&
+          (mTabs.Tab[Idx].QuestionId == PrevQid))
+      {
+        mTabs.Active = Idx;
+        break;
+      }
+    }
+  }
+}
+
+/**
+  Find a front-page statement by QuestionId (REF or any question).
+**/
+STATIC
+FORM_DISPLAY_ENGINE_STATEMENT *
+FindFrontPageStatementByQid (
+  IN FORM_DISPLAY_ENGINE_FORM  *FormData,
+  IN UINT16                    QuestionId
+  )
+{
+  LIST_ENTRY                     *Link;
+  FORM_DISPLAY_ENGINE_STATEMENT  *Statement;
+  EFI_IFR_QUESTION_HEADER        *Question;
+
+  for (Link = FormData->StatementListHead.ForwardLink;
+       Link != &FormData->StatementListHead;
+       Link = Link->ForwardLink)
+  {
+    Statement = FORM_DISPLAY_ENGINE_STATEMENT_FROM_LINK (Link);
+    if ((Statement == NULL) || (Statement->OpCode == NULL)) {
+      continue;
+    }
+
+    if (!OpcodeHasQuestionHeader (Statement->OpCode->OpCode)) {
+      continue;
+    }
+
+    Question = (EFI_IFR_QUESTION_HEADER *)((UINT8 *)Statement->OpCode + sizeof (EFI_IFR_OP_HEADER));
+    if (Question->QuestionId == QuestionId) {
+      return Statement;
+    }
+  }
+
+  return NULL;
+}
+
+/**
+  Stage selection of a front-page statement (ApplyUserInput style) and exit.
+**/
+STATIC
+VOID
+SelectFrontPageStatement (
+  IN OUT USER_INPUT                    *UserInputData,
+  IN     FORM_DISPLAY_ENGINE_STATEMENT *Statement
+  )
+{
+  ZeroMem (UserInputData, sizeof (USER_INPUT));
+  UserInputData->Action            = 0;
+  UserInputData->SelectedStatement = Statement;
+  CopyMem (
+    &UserInputData->InputValue,
+    &Statement->CurrentValue,
+    sizeof (EFI_HII_VALUE)
+    );
+}
+
+/**
+  TRUE when tab mode may consume LEFT/RIGHT (not editing, no popup/dropdown).
+**/
+STATIC
+BOOLEAN
+TabKeysAllowed (
+  VOID
+  )
+{
+  lv_obj_t  *Focused;
+
+  if (!PcdGetBool (PcdLvglFrontPageTabs)) {
+    return FALSE;
+  }
+
+  if (mTabs.Count == 0) {
+    return FALSE;
+  }
+
+  if (mPopupOverlay != NULL) {
+    return FALSE;
+  }
+
+  if ((mSession.Group != NULL) && lv_group_get_editing (mSession.Group)) {
+    return FALSE;
+  }
+
+  Focused = (mSession.Group != NULL) ? lv_group_get_focused (mSession.Group) : NULL;
+  if ((Focused != NULL) &&
+      lv_obj_check_type (Focused, &lv_dropdown_class) &&
+      lv_dropdown_is_open (Focused))
+  {
+    return FALSE;
+  }
+
+  return TRUE;
+}
+
+/**
+  Queue a tab switch via FORM_EXIT (RequestUserExit commits dirty edits first).
+**/
+STATIC
+BOOLEAN
+RequestTabSwitch (
+  IN INTN  Delta
+  )
+{
+  UINTN  Next;
+
+  if (!TabKeysAllowed ()) {
+    return FALSE;
+  }
+
+  Next = (mTabs.Active + mTabs.Count + (UINTN)Delta) % mTabs.Count;
+  mPendingTab = Next;
+  DEBUG ((
+    DEBUG_INFO,
+    "LvglRenderer: tab switch pending %u -> %u\n",
+    (UINT32)mTabs.Active,
+    (UINT32)mPendingTab
+    ));
+
+  // On the synthetic Save & Exit page we are still "on" the front FormDisplay;
+  // ask the browser to re-call FormDisplay via NONE instead of popping a form.
+  if (IsFrontPageForm () &&
+      (mTabs.Tab[mTabs.Active].Kind == LvglTabKindSaveExit))
+  {
+    ZeroMem (mSession.UserInput, sizeof (USER_INPUT));
+    mSession.UserInput->Action = BROWSER_ACTION_NONE;
+    mSession.ExitRequested     = TRUE;
+    return TRUE;
+  }
+
+  RequestUserExit (BROWSER_ACTION_FORM_EXIT, 0, NULL);
+  return TRUE;
+}
+
+/**
+  Handle PcdLvglFrontPageTabs early path in LvglRenderForm.
+  @retval TRUE  Caller must return EFI_SUCCESS without building a screen.
+**/
+
+//
+// Synthetic Save & Exit page (T14). Not bound to HII statements.
+//
+typedef enum {
+  LvglSaveExitSaveExit = 0,
+  LvglSaveExitDiscardExit,
+  LvglSaveExitSaveReset,
+  LvglSaveExitDiscardReset,
+  LvglSaveExitSave,
+  LvglSaveExitDiscard,
+  LvglSaveExitDefaults,
+  LvglSaveExitMax
+} LVGL_SAVE_EXIT_ROW;
+
+typedef struct {
+  CONST CHAR8         *Label;
+  CONST CHAR8         *ConfirmMsg;
+  CONST CHAR8         *Help;
+  UINT32              Action;
+  LVGL_FRONT_ACTION   AfterAction;
+} LVGL_SAVE_EXIT_DESC;
+
+STATIC CONST LVGL_SAVE_EXIT_DESC  mSaveExitRows[LvglSaveExitMax] = {
+  { "Save Changes and Exit",    "Save configuration and exit?",   "Save all changes and leave Setup.",           BROWSER_ACTION_SUBMIT,  LvglFrontActionSelectContinue },
+  { "Discard Changes and Exit", "Exit without saving?",           "Discard changes and leave Setup.",            BROWSER_ACTION_DISCARD, LvglFrontActionSelectContinue },
+  { "Save Changes and Reset",   "Save configuration and reset?",  "Save all changes and reset the system.",      BROWSER_ACTION_SUBMIT,  LvglFrontActionSelectReset },
+  { "Discard Changes and Reset","Reset without saving?",          "Discard changes and reset the system.",       BROWSER_ACTION_DISCARD, LvglFrontActionSelectReset },
+  { "Save Changes",             "Save configuration?",            "Save changes and stay in Setup.",             BROWSER_ACTION_SUBMIT,  LvglFrontActionRedrawSaveExit },
+  { "Discard Changes",          "Load previous values?",          "Reload previous values and stay in Setup.",   BROWSER_ACTION_DISCARD, LvglFrontActionRedrawSaveExit },
+  { "Restore Defaults",         "Load optimized defaults?",       "Load factory defaults and stay in Setup.",    BROWSER_ACTION_DEFAULT, LvglFrontActionRedrawSaveExit },
+};
+
+STATIC LVGL_SAVE_EXIT_ROW  mPendingSaveExitRow = LvglSaveExitMax;
+
+STATIC
+VOID
+OnSaveExitClicked (
+  lv_event_t  *Event
+  )
+{
+  LVGL_SAVE_EXIT_ROW  Row;
+  CONST CHAR8         *Msg;
+
+  Row = (LVGL_SAVE_EXIT_ROW)(UINTN)lv_event_get_user_data (Event);
+  if (Row >= LvglSaveExitMax) {
+    return;
+  }
+
+  if (mPopupOverlay != NULL) {
+    return;
+  }
+
+  mPendingSaveExitRow = Row;
+  Msg = mSaveExitRows[Row].ConfirmMsg;
+  ShowPopup (
+    mSession.Group,
+    mSaveExitRows[Row].Label,
+    Msg,
+    "Yes",
+    mSaveExitRows[Row].Action,
+    FALSE,
+    LvglPopupPurposeBrowserAction
+    );
+  // Stash after-action in DefaultId unused path via mPendingFrontAction after confirm.
+}
+
+STATIC
+VOID
+OnSaveExitFocused (
+  lv_event_t  *Event
+  )
+{
+  LVGL_SAVE_EXIT_ROW  Row;
+
+  Row = (LVGL_SAVE_EXIT_ROW)(UINTN)lv_event_get_user_data (Event);
+  if (Row < LvglSaveExitMax) {
+    LvglChromeSetHelpText (mSaveExitRows[Row].Help);
+  }
+}
+
+STATIC
+VOID
+BuildSaveExitPage (
+  IN lv_obj_t    *Parent,
+  IN lv_group_t  *Group
+  )
+{
+  UINTN     Idx;
+  lv_obj_t  *Btn;
+  lv_obj_t  *Label;
+
+  for (Idx = 0; Idx < LvglSaveExitMax; Idx++) {
+    Btn = lv_btn_create (Parent);
+    StyleRow (Btn);
+    lv_obj_set_style_text_align (Btn, LV_TEXT_ALIGN_LEFT, 0);
+    LvglChromeStyleWidget (Btn, LvglChromePartRefButton);
+
+    Label = lv_label_create (Btn);
+    lv_label_set_text (Label, mSaveExitRows[Idx].Label);
+    lv_obj_align (Label, LV_ALIGN_LEFT_MID, 0, 0);
+    LvglThemeApplyBodyFont (Label);
+    LvglChromeStyleWidget (Label, LvglChromePartRefLabel);
+
+    lv_obj_add_event_cb (Btn, OnSaveExitClicked, LV_EVENT_CLICKED, (VOID *)(UINTN)Idx);
+    lv_obj_add_event_cb (Btn, OnSaveExitFocused, LV_EVENT_FOCUSED, (VOID *)(UINTN)Idx);
+    //
+    // AddToNavGroup adds the button to Group, hooks OnNavKey (LEFT/RIGHT tab
+    // switch, ESC, F-keys) and OnNavFocused, and records it in mNavList.
+    // Ctx == NULL: no HII statement; ENTER falls through to the button class
+    // handler (CLICKED -> OnSaveExitClicked), same as ordered-list Up/Down.
+    //
+    AddToNavGroup (Group, Btn, NULL);
+  }
+}
+
+STATIC
+BOOLEAN
+HandleTabsBeforeBuild (
+  IN     FORM_DISPLAY_ENGINE_FORM  *FormData,
+  IN OUT USER_INPUT                *UserInputData
+  )
+{
+  FORM_DISPLAY_ENGINE_STATEMENT  *Statement;
+  UINT16                         Qid;
+
+  if (!PcdGetBool (PcdLvglFrontPageTabs)) {
+    return FALSE;
+  }
+
+  if (IsFrontPageFormData (FormData)) {
+    CollectFrontPageTabs (FormData);
+
+    // T13/T14 pending front-page actions (stubs safe in T11: only None).
+    if (mPendingFrontAction == LvglFrontActionDiscardThenContinue) {
+      ZeroMem (UserInputData, sizeof (USER_INPUT));
+      UserInputData->Action = BROWSER_ACTION_DISCARD;
+      mPendingFrontAction   = LvglFrontActionSelectContinue;
+      DEBUG ((DEBUG_INFO, "LvglRenderer: tabs front action DISCARD\n"));
+      return TRUE;
+    }
+
+    if (mPendingFrontAction == LvglFrontActionSelectContinue) {
+      Qid = PcdGet16 (PcdLvglFrontPageContinueQuestionId);
+      Statement = FindFrontPageStatementByQid (FormData, Qid);
+      mPendingFrontAction = LvglFrontActionNone;
+      if (Statement == NULL) {
+        DEBUG ((DEBUG_ERROR, "LvglRenderer: Continue Qid 0x%04x not found\n", Qid));
+        return FALSE;
+      }
+
+      SelectFrontPageStatement (UserInputData, Statement);
+      DEBUG ((DEBUG_INFO, "LvglRenderer: tabs select Continue qid=0x%04x\n", Qid));
+      return TRUE;
+    }
+
+    if (mPendingFrontAction == LvglFrontActionRedrawSaveExit) {
+      UINTN  Ti;
+
+      mPendingFrontAction = LvglFrontActionNone;
+      for (Ti = 0; Ti < mTabs.Count; Ti++) {
+        if (mTabs.Tab[Ti].Kind == LvglTabKindSaveExit) {
+          mTabs.Active = Ti;
+          break;
+        }
+      }
+
+      DEBUG ((DEBUG_INFO, "LvglRenderer: tabs redraw Save&Exit\n"));
+    }
+
+    if (mPendingFrontAction == LvglFrontActionSelectReset) {
+      Qid = PcdGet16 (PcdLvglFrontPageResetQuestionId);
+      Statement = FindFrontPageStatementByQid (FormData, Qid);
+      mPendingFrontAction = LvglFrontActionNone;
+      if (Statement == NULL) {
+        DEBUG ((DEBUG_ERROR, "LvglRenderer: Reset Qid 0x%04x not found\n", Qid));
+        return FALSE;
+      }
+
+      SelectFrontPageStatement (UserInputData, Statement);
+      DEBUG ((DEBUG_INFO, "LvglRenderer: tabs select Reset qid=0x%04x\n", Qid));
+      return TRUE;
+    }
+
+    // Pending Ref tab: select matching REF without building.
+    if (mPendingTab != MAX_UINTN) {
+      if ((mPendingTab < mTabs.Count) &&
+          (mTabs.Tab[mPendingTab].Kind == LvglTabKindRef))
+      {
+        Qid = mTabs.Tab[mPendingTab].QuestionId;
+        Statement = FindFrontPageStatementByQid (FormData, Qid);
+        if (Statement != NULL) {
+          SelectFrontPageStatement (UserInputData, Statement);
+          mTabs.Active          = mPendingTab;
+          mNextFormIsTabRoot    = TRUE;
+          mTabsEverSelected     = TRUE;
+          mPendingTab           = MAX_UINTN;
+          DEBUG ((
+            DEBUG_INFO,
+            "LvglRenderer: tabs enter Ref[%u] qid=0x%04x\n",
+            (UINT32)mTabs.Active,
+            Qid
+            ));
+          return TRUE;
+        }
+
+        DEBUG ((
+          DEBUG_ERROR,
+          "LvglRenderer: pending tab qid=0x%04x not found; draw front\n",
+          Qid
+          ));
+        mPendingTab = MAX_UINTN;
+        return FALSE;
+      }
+
+      // SaveExit pending: fall through to Active SaveExit build path.
+      if ((mPendingTab < mTabs.Count) &&
+          (mTabs.Tab[mPendingTab].Kind == LvglTabKindSaveExit))
+      {
+        mTabs.Active = mPendingTab;
+        mPendingTab  = MAX_UINTN;
+        DEBUG ((
+          DEBUG_INFO,
+          "LvglRenderer: tabs pending SaveExit Active=%u Count=%u\n",
+          (UINT32)mTabs.Active,
+          (UINT32)mTabs.Count
+          ));
+      } else {
+        DEBUG ((
+          DEBUG_ERROR,
+          "LvglRenderer: pending tab %u cleared (count=%u)\n",
+          (UINT32)mPendingTab,
+          (UINT32)mTabs.Count
+          ));
+        mPendingTab = MAX_UINTN;
+      }
+    }
+
+    // First entry: auto-select tab 0.
+    if (!mTabsEverSelected && (mTabs.Count > 0) &&
+        (mTabs.Tab[0].Kind == LvglTabKindRef))
+    {
+      mPendingTab = 0;
+      Qid = mTabs.Tab[0].QuestionId;
+      Statement = FindFrontPageStatementByQid (FormData, Qid);
+      if (Statement != NULL) {
+        SelectFrontPageStatement (UserInputData, Statement);
+        mTabs.Active       = 0;
+        mNextFormIsTabRoot = TRUE;
+        mTabsEverSelected  = TRUE;
+        mPendingTab        = MAX_UINTN;
+        DEBUG ((DEBUG_INFO, "LvglRenderer: tabs first entry qid=0x%04x\n", Qid));
+        return TRUE;
+      }
+
+      DEBUG ((DEBUG_ERROR, "LvglRenderer: first tab qid=0x%04x missing\n", Qid));
+      mPendingTab = MAX_UINTN;
+      return FALSE;
+    }
+
+    // Esc from a tab root back to front (T11): re-enter active tab.
+    if (mTabsEverSelected && (mTabs.Count > 0) &&
+        (mTabs.Tab[mTabs.Active].Kind == LvglTabKindRef))
+    {
+      mPendingTab = mTabs.Active;
+      Qid = mTabs.Tab[mTabs.Active].QuestionId;
+      Statement = FindFrontPageStatementByQid (FormData, Qid);
+      if (Statement != NULL) {
+        SelectFrontPageStatement (UserInputData, Statement);
+        mNextFormIsTabRoot = TRUE;
+        mPendingTab        = MAX_UINTN;
+        DEBUG ((
+          DEBUG_INFO,
+          "LvglRenderer: tabs re-enter Active[%u] qid=0x%04x\n",
+          (UINT32)mTabs.Active,
+          Qid
+          ));
+        return TRUE;
+      }
+
+      mPendingTab = MAX_UINTN;
+    }
+
+    // Active Save & Exit: fall through to build synthetic page (T14).
+    if ((mTabs.Count > 0) &&
+        (mTabs.Active < mTabs.Count) &&
+        (mTabs.Tab[mTabs.Active].Kind == LvglTabKindSaveExit))
+    {
+      mTabs.AtRoot     = TRUE;
+      mTabsEverSelected = TRUE;
+      DEBUG ((DEBUG_INFO, "LvglRenderer: tabs build Save&Exit page\n"));
+      return FALSE;
+    }
+
+    return FALSE;
+  }
+
+  // Non-front page:
+  if (mPendingTab != MAX_UINTN) {
+    ZeroMem (UserInputData, sizeof (USER_INPUT));
+    UserInputData->Action = BROWSER_ACTION_FORM_EXIT;
+    DEBUG ((
+      DEBUG_INFO,
+      "LvglRenderer: tabs FORM_EXIT (pending=%u) FormId=0x%x\n",
+      (UINT32)mPendingTab,
+      FormData->FormId
+      ));
+    return TRUE;
+  }
+
+  if (mNextFormIsTabRoot) {
+    CopyGuid (&mTabRootFormSetGuid, &FormData->FormSetGuid);
+    mTabRootFormId     = FormData->FormId;
+    mNextFormIsTabRoot = FALSE;
+    mTabs.AtRoot       = TRUE;
+    DEBUG ((
+      DEBUG_INFO,
+      "LvglRenderer: tabs root set FormId=0x%x\n",
+      FormData->FormId
+      ));
+  } else {
+    mTabs.AtRoot = (BOOLEAN)(
+      CompareGuid (&FormData->FormSetGuid, &mTabRootFormSetGuid) &&
+      (FormData->FormId == mTabRootFormId)
+      );
+  }
+
+  return FALSE;
 }
 
 /**
@@ -1306,11 +1944,13 @@ LvglTpUiDropBackdrop (
 STATIC
 VOID
 ShowPopup (
-  IN lv_group_t  *Group,
-  IN CONST CHAR8  *Title,
-  IN CONST CHAR8  *ConfirmLabel,
-  IN UINT32        ConfirmAction,
-  IN BOOLEAN       ShowDiscard
+  IN lv_group_t           *Group,
+  IN CONST CHAR8          *Title,
+  IN CONST CHAR8          *Message OPTIONAL,
+  IN CONST CHAR8          *ConfirmLabel,
+  IN UINT32               ConfirmAction,
+  IN BOOLEAN              ShowDiscard,
+  IN LVGL_POPUP_PURPOSE   Purpose
   )
 {
   LVGL_DIALOG_SHELL  Shell;
@@ -1318,18 +1958,28 @@ ShowPopup (
   lv_obj_t           *DiscardBtn;
   lv_obj_t           *CancelBtn;
   lv_obj_t           *Lbl;
+  CONST CHAR8        *Msg;
 
   mPopupConfirmAction = ConfirmAction;
   mPopupResult        = LVGL_POPUP_PENDING;
   mPopupHasDiscard    = ShowDiscard;
+  mPopupPurpose       = Purpose;
   mPopupPrevFocus     = (Group != NULL) ? lv_group_get_focused (Group) : NULL;
 
   CreateDialogShell (&Shell, Title);
   mPopupOverlay = Shell.Overlay;
 
+  if (Message != NULL) {
+    Msg = Message;
+  } else if (ShowDiscard) {
+    Msg = "You have unsaved changes.";
+  } else {
+    Msg = "Save the current settings?";
+  }
+
   CreateDialogMessageLabel (
     Shell.Card,
-    ShowDiscard ? "You have unsaved changes." : "Save the current settings?",
+    Msg,
     FALSE
     );
 
@@ -1426,7 +2076,7 @@ HandleFunctionKey (
           CONST CHAR8  *Label = ((HotKey->Action & BROWSER_ACTION_DEFAULT) != 0)
                                   ? "Load" : "Save";
           mPendingDefaultId = HotKey->DefaultId;
-          ShowPopup (mSession.Group, Title, Label, HotKey->Action, FALSE);
+          ShowPopup (mSession.Group, Title, NULL, Label, HotKey->Action, FALSE, LvglPopupPurposeBrowserAction);
         }
       } else {
         RequestUserExit (HotKey->Action, HotKey->DefaultId, NULL);
@@ -1556,13 +2206,49 @@ OnIndevFallbackKey (
     return;
   }
 
+  if ((Key == LV_KEY_LEFT) || (Key == LV_KEY_RIGHT)) {
+    if (RequestTabSwitch ((Key == LV_KEY_RIGHT) ? 1 : -1)) {
+      return;
+    }
+  }
+
   if (Key == LV_KEY_ESC) {
     //
     // Front page: no parent form to exit to -- swallow ESC so the user can't
     // accidentally drop out of setup.
     //
     if (!IsFrontPageForm ()) {
-      RequestUserExit (BROWSER_ACTION_FORM_EXIT, 0, NULL);
+      if (PcdGetBool (PcdLvglFrontPageTabs) && mTabs.AtRoot) {
+        if (mPopupOverlay == NULL) {
+          ShowPopup (
+            mSession.Group,
+            "Exit Setup",
+            "Discard changes and exit Setup?",
+            "Yes",
+            BROWSER_ACTION_FORM_EXIT,
+            FALSE,
+            LvglPopupPurposeExitSetup
+            );
+        }
+      } else {
+        RequestUserExit (BROWSER_ACTION_FORM_EXIT, 0, NULL);
+      }
+    } else if (PcdGetBool (PcdLvglFrontPageTabs) &&
+               (mTabs.Count > 0) &&
+               (mTabs.Active < mTabs.Count) &&
+               (mTabs.Tab[mTabs.Active].Kind == LvglTabKindSaveExit))
+    {
+      if (mPopupOverlay == NULL) {
+        ShowPopup (
+          mSession.Group,
+          "Exit Setup",
+          "Discard changes and exit Setup?",
+          "Yes",
+          BROWSER_ACTION_FORM_EXIT,
+          FALSE,
+          LvglPopupPurposeExitSetup
+          );
+      }
     }
 
     return;
@@ -2282,7 +2968,37 @@ OnNavKey (
     }
 
     if (!IsFrontPageForm ()) {
-      RequestUserExit (BROWSER_ACTION_FORM_EXIT, 0, NULL);
+      if (PcdGetBool (PcdLvglFrontPageTabs) && mTabs.AtRoot) {
+        if (mPopupOverlay == NULL) {
+          ShowPopup (
+            mSession.Group,
+            "Exit Setup",
+            "Discard changes and exit Setup?",
+            "Yes",
+            BROWSER_ACTION_FORM_EXIT,
+            FALSE,
+            LvglPopupPurposeExitSetup
+            );
+        }
+      } else {
+        RequestUserExit (BROWSER_ACTION_FORM_EXIT, 0, NULL);
+      }
+    } else if (PcdGetBool (PcdLvglFrontPageTabs) &&
+               (mTabs.Count > 0) &&
+               (mTabs.Active < mTabs.Count) &&
+               (mTabs.Tab[mTabs.Active].Kind == LvglTabKindSaveExit))
+    {
+      if (mPopupOverlay == NULL) {
+        ShowPopup (
+          mSession.Group,
+          "Exit Setup",
+          "Discard changes and exit Setup?",
+          "Yes",
+          BROWSER_ACTION_FORM_EXIT,
+          FALSE,
+          LvglPopupPurposeExitSetup
+          );
+      }
     }
 
     lv_event_stop_processing (Event);
@@ -2292,6 +3008,13 @@ OnNavKey (
   if (HandleFunctionKey (Key)) {
     lv_event_stop_processing (Event);
     return;
+  }
+
+  if (!Editing && ((Key == LV_KEY_LEFT) || (Key == LV_KEY_RIGHT))) {
+    if (RequestTabSwitch ((Key == LV_KEY_RIGHT) ? 1 : -1)) {
+      lv_event_stop_processing (Event);
+      return;
+    }
   }
 
   if (Editing) {
@@ -3955,6 +4678,15 @@ LvglRenderForm (
     );
 
   //
+  // Tab mode: may return without building (Enter/Leave still paired via
+  // LvglFormDisplay). Must run before Teardown/ZeroMem so the previous
+  // screen pointer in mSession is preserved.
+  //
+  if (HandleTabsBeforeBuild (FormData, UserInputData)) {
+    return EFI_SUCCESS;
+  }
+
+  //
   // Tear down any chrome-owned timers from the previous form before we
   // build a new one (LVGL timers are not children of the screen object).
   //
@@ -3999,7 +4731,11 @@ LvglRenderForm (
   // appended to that panel below.
   //
   mSession.Screen = lv_obj_create (NULL);
-  ContentPanel    = LvglChromeBuild (mSession.Screen, FormData);
+  ContentPanel    = LvglChromeBuild (
+                       mSession.Screen,
+                       FormData,
+                       PcdGetBool (PcdLvglFrontPageTabs) ? &mTabs : NULL
+                       );
   mContentPanel   = ContentPanel;
 
   //
@@ -4039,7 +4775,17 @@ LvglRenderForm (
     lv_obj_t  *OrigScreen = mSession.Screen;
 
     mSession.Screen = ContentPanel;
-    BuildFormWidgets (&mSession);
+    if (PcdGetBool (PcdLvglFrontPageTabs) &&
+        IsFrontPageFormData (FormData) &&
+        (mTabs.Count > 0) &&
+        (mTabs.Active < mTabs.Count) &&
+        (mTabs.Tab[mTabs.Active].Kind == LvglTabKindSaveExit))
+    {
+      BuildSaveExitPage (ContentPanel, mSession.Group);
+    } else {
+      BuildFormWidgets (&mSession);
+    }
+
     mSession.Screen = OrigScreen;
   }
 
@@ -4127,8 +4873,41 @@ LvglRenderForm (
     // Process popup result once the overlay has been dismissed.
     //
     if ((mPopupResult != LVGL_POPUP_PENDING) && (mPopupOverlay == NULL)) {
-      if (mPopupResult != BROWSER_ACTION_NONE) {
-        RequestUserExit (mPopupResult, mPendingDefaultId, NULL);
+      if (mPopupPurpose == LvglPopupPurposeExitSetup) {
+        if (mPopupResult != BROWSER_ACTION_NONE) {
+          // Yes: discard then Continue on the (hidden) front page.
+          // Save & Exit is already a front-page FormDisplay, so FORM_EXIT would
+          // not re-enter front; apply DISCARD now and select Continue next.
+          if (IsFrontPageForm ()) {
+            mPendingFrontAction = LvglFrontActionSelectContinue;
+            ZeroMem (mSession.UserInput, sizeof (USER_INPUT));
+            mSession.UserInput->Action = BROWSER_ACTION_DISCARD;
+            mSession.ExitRequested     = TRUE;
+            DEBUG ((DEBUG_INFO, "LvglRenderer: ExitSetup Yes on front -> DISCARD then Continue\n"));
+          } else {
+            mPendingFrontAction = LvglFrontActionDiscardThenContinue;
+            RequestUserExit (BROWSER_ACTION_FORM_EXIT, 0, NULL);
+            DEBUG ((DEBUG_INFO, "LvglRenderer: ExitSetup Yes -> FORM_EXIT then DISCARD/Continue\n"));
+          }
+        }
+
+        // No / Cancel: stay on the current form.
+        mPopupPurpose = LvglPopupPurposeBrowserAction;
+      } else if (mPopupResult != BROWSER_ACTION_NONE) {
+        if (mPendingSaveExitRow < LvglSaveExitMax) {
+          UINT16  DefId;
+
+          mPendingFrontAction = mSaveExitRows[mPendingSaveExitRow].AfterAction;
+          DefId = (mPopupResult == BROWSER_ACTION_DEFAULT)
+                    ? (UINT16)EFI_HII_DEFAULT_CLASS_STANDARD
+                    : mPendingDefaultId;
+          mPendingSaveExitRow = LvglSaveExitMax;
+          RequestUserExit (mPopupResult, DefId, NULL);
+        } else {
+          RequestUserExit (mPopupResult, mPendingDefaultId, NULL);
+        }
+      } else {
+        mPendingSaveExitRow = LvglSaveExitMax;
       }
 
       mPopupResult = LVGL_POPUP_PENDING;
@@ -4195,7 +4974,7 @@ LvglRunConfirmPopup (
     }
   }
 
-  ShowPopup (PopupGroup, "Unsaved Changes", "Save", BROWSER_ACTION_SUBMIT, TRUE);
+  ShowPopup (PopupGroup, "Unsaved Changes", NULL, "Save", BROWSER_ACTION_SUBMIT, TRUE, LvglPopupPurposeBrowserAction);
 
   //
   // Drain pending keystrokes so the popup isn't dismissed accidentally.

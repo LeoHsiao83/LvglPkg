@@ -235,6 +235,9 @@ Declared in `LvglPkg.dec`:
 | `PcdLvglCenteredFrameEnabled` | Enable centered frame by default |
 | `PcdLvglCenteredFrameHeightPct` | Frame height (% of display height) |
 | `PcdLvglCenteredFrameAspectNum` / `Den` | Frame aspect ratio (e.g. 16:9) |
+| PcdLvglFrontPageTabs | When TRUE, hide UiApp front page and show REF entries as tabs (LEFT/RIGHT) |
+| PcdLvglFrontPageContinueQuestionId | Front-page QuestionId for Continue (leave Setup) |
+| PcdLvglFrontPageResetQuestionId | Front-page QuestionId for Reset |
 
 Example:
 
