@@ -122,7 +122,9 @@ LvglThemeMontserratBody (
     return &lv_font_montserrat_32;
 #endif
   } else if ((mScaleNum == 3) && (mScaleDen == 2)) {
+#if LV_FONT_MONTSERRAT_24
     return &lv_font_montserrat_24;
+#endif
   }
 
   return &lv_font_montserrat_16;
@@ -284,7 +286,11 @@ LvglThemeClosestMontserrat (
     return Table[BestIdx].Font;
   }
 
+#if LV_FONT_MONTSERRAT_14
   return &lv_font_montserrat_14;
+#else
+  return &lv_font_montserrat_16;
+#endif
 }
 
 const lv_font_t *

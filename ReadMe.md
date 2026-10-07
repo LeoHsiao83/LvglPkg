@@ -235,9 +235,9 @@ Declared in `LvglPkg.dec`:
 | `PcdLvglCenteredFrameEnabled` | Enable centered frame by default |
 | `PcdLvglCenteredFrameHeightPct` | Frame height (% of display height) |
 | `PcdLvglCenteredFrameAspectNum` / `Den` | Frame aspect ratio (e.g. 16:9) |
-| PcdLvglFrontPageTabs | When TRUE, hide UiApp front page and show REF entries as tabs (LEFT/RIGHT) |
-| PcdLvglFrontPageContinueQuestionId | Front-page QuestionId for Continue (leave Setup) |
-| PcdLvglFrontPageResetQuestionId | Front-page QuestionId for Reset |
+| `PcdLvglFrontPageTabs` | When TRUE, hide UiApp front page and show REF entries as tabs (LEFT/RIGHT) |
+| `PcdLvglFrontPageContinueQuestionId` | Front-page QuestionId for Continue (leave Setup) |
+| `PcdLvglFrontPageResetQuestionId` | Front-page QuestionId for Reset |
 
 Example:
 
@@ -255,6 +255,30 @@ rebuild to restyle the UI. Chrome **strings**, help-pane **width**, and
 centered-frame **defaults** are controlled by PCDs and/or the setup form
 instead.
 
+### Montserrat minimal (`LVGL_MONTSERRAT_MINIMAL`)
+
+Size-constrained platforms can keep only Montserrat **16** and **20**
+(enough for UI text plus `LV_SYMBOL_*` fallback) by defining the compile-time
+macro `LVGL_MONTSERRAT_MINIMAL`. In `Library/LvglLib/lv_conf.h` this switches
+`LV_FONT_MONTSERRAT_*` so only 16 and 20 are enabled and sets
+`LV_FONT_DEFAULT` to `&lv_font_montserrat_16`. When the macro is **undefined**,
+the Montserrat block expands identically to the full set (14/16/18/20/22/24/30/32/40).
+
+**Every** module that includes `lv_conf.h` (or compiles an LVGL / theme object
+against those font symbols) must receive the **same** `/DLVGL_MONTSERRAT_MINIMAL`
+(or equivalent `-D`) via DSC `[BuildOptions]`. Mixing units with and without the
+macro causes undefined-reference / multiply-defined font link failures.
+
+Platform DSC example:
+
+```ini
+[BuildOptions]
+  MSFT:*_*_X64_CC_FLAGS = /DLVGL_MONTSERRAT_MINIMAL
+```
+
+The spike tree wires this flag from its platform DSC when the size-constrained
+chrome configuration is selected; keep the `/D` on every LVGL-related component
+in that configuration so link stays consistent.
 ## Build
 
 ### Standalone -- verify the package compiles
