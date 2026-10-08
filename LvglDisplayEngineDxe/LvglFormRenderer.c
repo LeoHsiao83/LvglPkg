@@ -3357,9 +3357,24 @@ MarkRowChanged (
   lv_obj_t  *Row
   )
 {
+  INT32  PadLeft;
+
+  //
+  // Amber left border is drawn inside the content box (lv_obj_get_content_coords
+  // uses space_left = pad_left + border_width when LEFT side is set). Shrink
+  // pad_left by the border width so content x stays put vs an unchanged row.
+  // Restore full pad on FOCUSED / FOCUS_KEY: Aptio keeps a focus border there,
+  // a chrome may clear it -- either way content space must match the unchanged case.
+  //
+  PadLeft = lv_obj_get_style_pad_left (Row, 0);
   lv_obj_set_style_border_color (Row, lv_color_hex (THEME_COLOR_WARNING), 0);
   lv_obj_set_style_border_side  (Row, LV_BORDER_SIDE_LEFT, 0);
   lv_obj_set_style_border_width (Row, THEME_BORDER_FOCUS, 0);
+  if (PadLeft >= THEME_BORDER_FOCUS) {
+    lv_obj_set_style_pad_left (Row, PadLeft - THEME_BORDER_FOCUS, 0);
+    lv_obj_set_style_pad_left (Row, PadLeft, LV_STATE_FOCUSED);
+    lv_obj_set_style_pad_left (Row, PadLeft, LV_STATE_FOCUS_KEY);
+  }
 }
 
 STATIC
