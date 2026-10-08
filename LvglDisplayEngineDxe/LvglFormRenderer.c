@@ -261,6 +261,14 @@ Ucs2ToUtf8 (
   for (Idx = 0; Idx < Len; Idx++) {
     UINT16  Ch = Str16[Idx];
 
+    //
+    // HII NARROW_CHAR (U+FFF0) / WIDE_CHAR (U+FFF1) are layout controls, not
+    // glyphs. Skip them.
+    //
+    if ((Ch == NARROW_CHAR) || (Ch == WIDE_CHAR)) {
+      continue;
+    }
+
     if (Ch < 0x80) {
       Utf8[Out++] = (CHAR8)Ch;
     } else if (Ch < 0x800) {
