@@ -1642,7 +1642,7 @@ typedef struct {
 } LVGL_DIALOG_SHELL;
 
 /**
-  Shared modal shell: dimmed overlay, dialog card, title, separator, button row.
+  Shared modal shell: dimmed overlay, dialog card, title, separator (btn row later).
 **/
 STATIC
 VOID
@@ -1691,6 +1691,22 @@ CreateDialogShell (
   lv_obj_set_style_border_width (Sep, 0, 0);
   lv_obj_set_style_pad_all (Sep, 0, 0);
 
+  //
+  // Button row is created after the message label (CreateDialogBtnRow) so the
+  // flex column order is title -> message -> buttons.
+  //
+  Shell->BtnRow = NULL;
+}
+
+/**
+  Create the dialog button row as the last child of the card.
+**/
+STATIC
+VOID
+CreateDialogBtnRow (
+  IN OUT LVGL_DIALOG_SHELL  *Shell
+  )
+{
   Shell->BtnRow = lv_obj_create (Shell->Card);
   lv_obj_set_size (Shell->BtnRow, LV_PCT (100), LV_SIZE_CONTENT);
   lv_obj_set_flex_flow (Shell->BtnRow, LV_FLEX_FLOW_ROW);
@@ -1866,7 +1882,6 @@ LvglTpUiShow (
     }
 
     CreateDialogShell (&Shell, Title);
-    lv_obj_delete (Shell.BtnRow);
     mTpOverlay = Shell.Overlay;
     mTpTitle    = lv_obj_get_child (Shell.Card, 0);
     mTpTitleSep = lv_obj_get_child (Shell.Card, 1);
@@ -1990,6 +2005,7 @@ ShowPopup (
     Msg,
     FALSE
     );
+  CreateDialogBtnRow (&Shell);
 
   //
   // Confirm (Save / Load) button.
@@ -5150,6 +5166,7 @@ ShowHiiPopup (
   CreateDialogShell (&Shell, Title);
   mHiiPopupOverlay = Shell.Overlay;
   CreateDialogMessageLabel (Shell.Card, Message, TRUE);
+  CreateDialogBtnRow (&Shell);
 
   switch (PopupType) {
     case EfiHiiPopupTypeOk:
