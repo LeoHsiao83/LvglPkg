@@ -114,6 +114,25 @@ LvglHiiCreatePopup (
   );
 
 /**
+  Save the whole screen as a BMP file in the root of the first writable USB
+  volume (LvglScreenshot.c).
+
+  @param[out] FileName      Name of the saved file.
+  @param[in]  FileNameSize  Size of FileName in bytes.
+  @param[out] FileSize      Size of the saved file in bytes.
+
+  @retval EFI_SUCCESS    The file was written.
+  @retval EFI_NOT_FOUND  No USB volume; nothing was captured.
+  @retval Others         Capture or write failure.
+**/
+EFI_STATUS
+LvglScreenshotSave (
+  OUT CHAR16  *FileName,
+  IN  UINTN   FileNameSize,
+  OUT UINT32  *FileSize
+  );
+
+/**
   Tear down LVGL objects created by the renderer.
 **/
 VOID

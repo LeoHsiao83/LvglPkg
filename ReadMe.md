@@ -238,6 +238,7 @@ Declared in `LvglPkg.dec`:
 | `PcdLvglFrontPageTabs` | When TRUE, hide UiApp front page and show REF entries as tabs (LEFT/RIGHT) |
 | `PcdLvglFrontPageContinueQuestionId` | Front-page QuestionId for Continue (leave Setup) |
 | `PcdLvglFrontPageResetQuestionId` | Front-page QuestionId for Reset |
+| `PcdLvglScreenshotScanCode` | EFI scan code (e.g. `0x0016` = F12) that saves the screen as a BMP on the first writable USB volume; `0` = off (needs `BmpSupportLib`) |
 
 Example:
 

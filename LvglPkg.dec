@@ -67,3 +67,7 @@
 
   ## Front-page QuestionId the engine selects to reset (MdeModulePkg UiApp: 0x1001).
   gLvglPkgTokenSpaceGuid.PcdLvglFrontPageResetQuestionId|0x1001|UINT16|0x0000000C
+
+  ## EFI scan code (SCAN_F1-SCAN_F12) that saves the screen as a BMP file on the
+  ## first writable USB volume. 0 disables it.
+  gLvglPkgTokenSpaceGuid.PcdLvglScreenshotScanCode|0x0000|UINT16|0x0000000D

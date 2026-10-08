@@ -24,6 +24,7 @@
   LvglDisplayEngineDxe.c
   LvglFormRenderer.c
   LvglFormRenderer.h
+  LvglScreenshot.c
   LvglTextPopup.c
   LvglTextPopup.h
   LvglTextPopupScene.c
@@ -42,6 +43,8 @@
   PrintLib
   BaseMemoryLib
   BaseLib
+  BmpSupportLib
+  DevicePathLib
   MemoryAllocationLib
   HiiLib
   PcdLib
@@ -60,11 +63,13 @@
   gEfiHiiPopupProtocolGuid              ## CONSUMES
   gEfiGraphicsOutputProtocolGuid        ## SOMETIMES_CONSUMES
   gEfiSimpleTextOutProtocolGuid         ## SOMETIMES_CONSUMES
+  gEfiSimpleFileSystemProtocolGuid      ## SOMETIMES_CONSUMES ## Screenshot target
 
 [Pcd]
   gLvglPkgTokenSpaceGuid.PcdLvglFrontPageTabs
   gLvglPkgTokenSpaceGuid.PcdLvglFrontPageContinueQuestionId
   gLvglPkgTokenSpaceGuid.PcdLvglFrontPageResetQuestionId
+  gLvglPkgTokenSpaceGuid.PcdLvglScreenshotScanCode
 
 [BuildOptions]
   # Same LVGL header warnings as LvglLib.inf.

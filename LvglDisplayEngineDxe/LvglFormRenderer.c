@@ -2114,6 +2114,119 @@ HandleFunctionKey (
 }
 
 /**
+  TRUE when @a LvKey is the key set by PcdLvglScreenshotScanCode.
+**/
+STATIC
+BOOLEAN
+IsScreenshotKey (
+  IN UINT32  LvKey
+  )
+{
+  UINT16  ScanCode;
+
+  ScanCode = PcdGet16 (PcdLvglScreenshotScanCode);
+  return (BOOLEAN)((ScanCode != 0) &&
+                   (LvKey >= LV_KEY_F1) && (LvKey <= LV_KEY_F12) &&
+                   ((UINT16)(SCAN_F1 + (LvKey - LV_KEY_F1)) == ScanCode));
+}
+
+/**
+  TRUE when the current form has @a ScanCode in its hot key list.
+**/
+STATIC
+BOOLEAN
+FormHasHotKey (
+  IN UINT16  ScanCode
+  )
+{
+  LIST_ENTRY       *Link;
+  BROWSER_HOT_KEY  *HotKey;
+
+  if (mSession.FormData == NULL) {
+    return FALSE;
+  }
+
+  for (Link = mSession.FormData->HotKeyListHead.ForwardLink;
+       Link != &mSession.FormData->HotKeyListHead;
+       Link = Link->ForwardLink)
+  {
+    HotKey = BROWSER_HOT_KEY_FROM_LINK (Link);
+    if ((HotKey->KeyData != NULL) &&
+        (HotKey->KeyData->ScanCode == ScanCode) &&
+        (HotKey->KeyData->UnicodeChar == CHAR_NULL))
+    {
+      return TRUE;
+    }
+  }
+
+  return FALSE;
+}
+
+/**
+  Show @a Message over the screen until a key is pressed or, when
+  @a TimeoutMs is not zero, until it expires. The key is consumed.
+**/
+STATIC
+VOID
+ShowScreenshotNotice (
+  IN CONST CHAR8  *Message,
+  IN UINT32       TimeoutMs
+  )
+{
+  LVGL_DIALOG_SHELL  Shell;
+  EFI_INPUT_KEY      Key;
+  UINT32             Waited;
+
+  CreateDialogShell (&Shell, "Screenshot");
+  CreateDialogMessageLabel (Shell.Card, Message, TRUE);
+  lv_refr_now (NULL);
+
+  for (Waited = 0; (TimeoutMs == 0) || (Waited < TimeoutMs); Waited += 10) {
+    if (!EFI_ERROR (gST->ConIn->ReadKeyStroke (gST->ConIn, &Key))) {
+      break;
+    }
+
+    gBS->Stall (10 * 1000);
+  }
+
+  lv_obj_delete (Shell.Overlay);
+  lv_refr_now (NULL);
+}
+
+/**
+  Save the screen to USB storage and report the result. The notice is drawn
+  after the capture, so it is never part of the image.
+**/
+STATIC
+VOID
+TakeScreenshot (
+  VOID
+  )
+{
+  EFI_STATUS  Status;
+  CHAR16      FileName[40];
+  CHAR8       Message[80];
+  UINT32      FileSize;
+  UINT32      Start;
+
+  Start = lv_tick_get ();
+  lv_refr_now (NULL);
+  Status = LvglScreenshotSave (FileName, sizeof (FileName), &FileSize);
+  if (!EFI_ERROR (Status)) {
+    DEBUG ((DEBUG_INFO, "LvglScreenshot: saved %s, %u bytes, %u ms\n", FileName, FileSize, lv_tick_elaps (Start)));
+    AsciiSPrint (Message, sizeof (Message), "Saved: %s", FileName);
+    ShowScreenshotNotice (Message, 2000);
+  } else if (Status == EFI_NOT_FOUND) {
+    DEBUG ((DEBUG_INFO, "LvglScreenshot: no USB storage found\n"));
+    ShowScreenshotNotice ("No USB storage found.", 0);
+  } else {
+    DEBUG ((DEBUG_ERROR, "LvglScreenshot: not saved - %r, %u ms\n", Status, lv_tick_elaps (Start)));
+    AsciiSPrint (Message, sizeof (Message), "Save failed: %r", Status);
+    ShowScreenshotNotice (Message, 0);
+  }
+}
+
+/**
   Indev-level key handler -- UP/DOWN/Tab navigation (including grayed rows)
   and ESC when nothing enabled is focused.
 **/
@@ -2132,6 +2245,20 @@ OnIndevFallbackKey (
 
   Indev = lv_indev_active ();
   Key   = lv_indev_get_key (Indev);
+
+  //
+  // Screenshot key: ahead of the popup and editing checks so it also works
+  // over an open dropdown, a dialog or a text field. OnNavKey keeps the key
+  // from the focused widget. A form hot key on the same key wins.
+  //
+  if (IsScreenshotKey (Key)) {
+    if (!FormHasHotKey (PcdGet16 (PcdLvglScreenshotScanCode))) {
+      TakeScreenshot ();
+      return;
+    }
+
+    DEBUG ((DEBUG_INFO, "LvglScreenshot: scan code 0x%x is a form hot key, left to the form\n", PcdGet16 (PcdLvglScreenshotScanCode)));
+  }
 
   //
   // Popup is open -- OnPopupKey handles all keys for popup buttons.
@@ -2944,6 +3071,15 @@ OnNavKey (
   Key     = lv_indev_get_key (lv_indev_active ());
   Editing = lv_group_get_editing (mSession.Group);
   Ctx     = (LVGL_STATEMENT_CONTEXT *)lv_event_get_user_data (Event);
+
+  //
+  // OnIndevFallbackKey already took the screenshot key; a text field would
+  // otherwise insert it as a character.
+  //
+  if (IsScreenshotKey (Key) && !FormHasHotKey (PcdGet16 (PcdLvglScreenshotScanCode))) {
+    lv_event_stop_processing (Event);
+    return;
+  }
 
   //
   // Defer all key handling to OnPopupKey when a popup is visible.
