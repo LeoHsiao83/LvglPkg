@@ -239,6 +239,9 @@ Declared in `LvglPkg.dec`:
 | `PcdLvglFrontPageContinueQuestionId` | Front-page QuestionId for Continue (leave Setup) |
 | `PcdLvglFrontPageResetQuestionId` | Front-page QuestionId for Reset |
 | `PcdLvglScreenshotScanCode` | EFI scan code (e.g. `0x0016` = F12) that saves the screen as a BMP on the first writable USB volume; `0` = off (needs `BmpSupportLib`) |
+| `PcdLvglOnScreenKeyboard` | `TRUE` (default) pops up the on-screen keyboard for a mouse-focused text/numeric field; `FALSE` never creates it |
+| `PcdLvglPageKeysScroll` | When TRUE, PageUp/PageDown scroll one page and focus the first/last fully visible row (no wrap); `FALSE` (default) keeps them as Shift+Tab/Tab |
+| `PcdLvglScrollBeforeFocus` | When TRUE, UP/DOWN scroll one page first, keeping focus, when the next row is more than a page away or a wrap would skip hidden content; `FALSE` (default) moves focus at once |
 
 Example:
 

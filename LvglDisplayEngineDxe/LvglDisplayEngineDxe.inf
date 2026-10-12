@@ -70,6 +70,8 @@
   gLvglPkgTokenSpaceGuid.PcdLvglFrontPageContinueQuestionId
   gLvglPkgTokenSpaceGuid.PcdLvglFrontPageResetQuestionId
   gLvglPkgTokenSpaceGuid.PcdLvglScreenshotScanCode
+  gLvglPkgTokenSpaceGuid.PcdLvglOnScreenKeyboard
+  gLvglPkgTokenSpaceGuid.PcdLvglScrollBeforeFocus
 
 [BuildOptions]
   # Same LVGL header warnings as LvglLib.inf.

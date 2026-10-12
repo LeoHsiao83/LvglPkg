@@ -43,6 +43,13 @@ extern "C" {
 #define LV_KEY_F11  0x010BU
 #define LV_KEY_F12  0x010CU
 
+//
+// PageUp / PageDown when PcdLvglPageKeysScroll is TRUE.
+// Mirror of the defines in <Library/LvglLib.h>.
+//
+#define LV_KEY_PAGE_UP    0x010DU
+#define LV_KEY_PAGE_DOWN  0x010EU
+
 /**********************
  *      TYPEDEFS
  **********************/

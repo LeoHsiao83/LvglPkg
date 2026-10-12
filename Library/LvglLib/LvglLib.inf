@@ -516,6 +516,7 @@
   DebugLib
   PrintLib
   BaseLib
+  PcdLib
   TimerLib
   LvglUiConfigLib
   LvglThemeLib
@@ -525,6 +526,9 @@
   gEfiAbsolutePointerProtocolGuid
   gEfiSimplePointerProtocolGuid
   gEfiSimpleTextInputExProtocolGuid
+
+[Pcd]
+  gLvglPkgTokenSpaceGuid.PcdLvglPageKeysScroll
 
 [BuildOptions]
 

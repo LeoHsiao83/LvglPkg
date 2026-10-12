@@ -71,3 +71,15 @@
   ## EFI scan code (SCAN_F1-SCAN_F12) that saves the screen as a BMP file on the
   ## first writable USB volume. 0 disables it.
   gLvglPkgTokenSpaceGuid.PcdLvglScreenshotScanCode|0x0000|UINT16|0x0000000D
+
+  ## When TRUE, a mouse-focused String/Password/Numeric field pops up the
+  ## on-screen keyboard. FALSE never creates it (physical keyboard only).
+  gLvglPkgTokenSpaceGuid.PcdLvglOnScreenKeyboard|TRUE|BOOLEAN|0x0000000E
+
+  ## When TRUE, PageUp/PageDown scroll the form by one page and focus the
+  ## first/last fully visible row. FALSE keeps them as Shift+Tab/Tab.
+  gLvglPkgTokenSpaceGuid.PcdLvglPageKeysScroll|FALSE|BOOLEAN|0x0000000F
+
+  ## When TRUE, UP/DOWN scroll one page first (focus unchanged) when the next
+  ## row is further than a page away or the move would wrap past hidden content.
+  gLvglPkgTokenSpaceGuid.PcdLvglScrollBeforeFocus|FALSE|BOOLEAN|0x00000010

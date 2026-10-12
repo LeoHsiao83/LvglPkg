@@ -86,6 +86,30 @@ LvglChromeSetHelpText (
   );
 
 /**
+  Provided by the display engine for chrome mouse handlers: switch to tab
+  Index through the same path as LEFT/RIGHT (a dirty field is committed
+  first). The active tab and an out-of-range Index are ignored.
+
+  @retval TRUE   Switch queued.
+  @retval FALSE  Ignored (active tab, bad index, popup / edit / open list).
+**/
+BOOLEAN
+EFIAPI
+LvglRendererSelectTab (
+  IN UINTN  Index
+  );
+
+/**
+  Provided by the display engine for chrome mouse handlers: go back through
+  the same path as ESC (sub-form goes up one level, tab root asks to exit).
+**/
+VOID
+EFIAPI
+LvglRendererGoBack (
+  VOID
+  );
+
+/**
   Identifies which chrome-styled object a StyleWidget call targets.
   Numeric questions use a digit textarea (not a spinbox), so the part is
   named Numeric rather than Spinbox.

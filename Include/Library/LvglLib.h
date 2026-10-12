@@ -33,6 +33,13 @@
 #define LV_KEY_F11  0x010BU
 #define LV_KEY_F12  0x010CU
 
+//
+// PageUp / PageDown when PcdLvglPageKeysScroll is TRUE (otherwise the keypad
+// reports them as LV_KEY_PREV / LV_KEY_NEXT).
+//
+#define LV_KEY_PAGE_UP    0x010DU
+#define LV_KEY_PAGE_DOWN  0x010EU
+
 typedef
 VOID
 (EFIAPI *EFI_LVGL_APP_FUNCTION)(

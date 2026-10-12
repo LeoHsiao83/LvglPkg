@@ -51,6 +51,12 @@ STATIC UINTN                          mNavCount = 0;
 STATIC lv_obj_t  *mContentPanel = NULL;
 
 //
+// TRUE while a page key focuses a row it already scrolled fully into view, so
+// ScrollNavIntoView keeps the page scroll position.
+//
+STATIC BOOLEAN  mNavScrollHold = FALSE;
+
+//
 // Loaded from LvglUiScale each FormDisplay(); mirrors SubtitleShowsDeviceModel.
 //
 STATIC BOOLEAN  mSubtitleShowsDeviceModel = FALSE;
@@ -218,6 +224,8 @@ STATIC VOID AddToNavGroup (lv_group_t *Group, lv_obj_t *Widget, LVGL_STATEMENT_C
 STATIC BOOLEAN OpcodeHasQuestionHeader (IN UINT8 Op);
 STATIC BOOLEAN CompletePendingLeaveIfReady (VOID);
 STATIC BOOLEAN TryCommitFocusedThenNav (IN UINTN DestNavIdx);
+STATIC VOID PageScrollAndFocus (IN BOOLEAN Down);
+STATIC BOOLEAN ScrollBeforeFocus (IN UINTN From, IN UINTN To, IN BOOLEAN Forward);
 
 //
 // ---- Helper: UCS-2 string to UTF-8 for LVGL ----
@@ -727,21 +735,19 @@ TabKeysAllowed (
 }
 
 /**
-  Queue a tab switch via FORM_EXIT (RequestUserExit commits dirty edits first).
+  Queue a switch to tab Next via FORM_EXIT (RequestUserExit commits dirty
+  edits first).
 **/
 STATIC
 BOOLEAN
-RequestTabSwitch (
-  IN INTN  Delta
+RequestTabSwitchTo (
+  IN UINTN  Next
   )
 {
-  UINTN  Next;
-
-  if (!TabKeysAllowed ()) {
+  if (!TabKeysAllowed () || (Next >= mTabs.Count)) {
     return FALSE;
   }
 
-  Next = (mTabs.Active + mTabs.Count + (UINTN)Delta) % mTabs.Count;
   mPendingTab = Next;
   DEBUG ((
     DEBUG_INFO,
@@ -763,6 +769,39 @@ RequestTabSwitch (
 
   RequestUserExit (BROWSER_ACTION_FORM_EXIT, 0, NULL);
   return TRUE;
+}
+
+/**
+  Queue a tab switch by Delta (LEFT/RIGHT), wrapping at both ends.
+**/
+STATIC
+BOOLEAN
+RequestTabSwitch (
+  IN INTN  Delta
+  )
+{
+  if (!TabKeysAllowed ()) {
+    return FALSE;
+  }
+
+  return RequestTabSwitchTo ((mTabs.Active + mTabs.Count + (UINTN)Delta) % mTabs.Count);
+}
+
+/**
+  Chrome tab click: same switch path as LEFT/RIGHT.
+**/
+BOOLEAN
+EFIAPI
+LvglRendererSelectTab (
+  IN UINTN  Index
+  )
+{
+  if ((Index >= mTabs.Count) || (Index == mTabs.Active)) {
+    return FALSE;
+  }
+
+  DEBUG ((DEBUG_INFO, "LvglRenderer: tab click %u\n", (UINT32)Index));
+  return RequestTabSwitchTo (Index);
 }
 
 /**
@@ -2270,6 +2309,23 @@ OnIndevFallbackKey (
   Focused = (mSession.Group != NULL) ? lv_group_get_focused (mSession.Group) : NULL;
 
   //
+  // PageUp / PageDown (PcdLvglPageKeysScroll): ignored while a field is in
+  // edit mode or a dropdown list is open.
+  //
+  if ((Key == LV_KEY_PAGE_UP) || (Key == LV_KEY_PAGE_DOWN)) {
+    if ((mSession.Group != NULL) &&
+        !lv_group_get_editing (mSession.Group) &&
+        !((Focused != NULL) &&
+          lv_obj_check_type (Focused, &lv_dropdown_class) &&
+          lv_dropdown_is_open (Focused)))
+    {
+      PageScrollAndFocus (Key == LV_KEY_PAGE_DOWN);
+    }
+
+    return;
+  }
+
+  //
   // UP/DOWN: walk mNavList (so grayed rows stay reachable). LVGL does not
   // hard-advance on these keys -- it sends them to the focused object.
   //
@@ -2327,6 +2383,17 @@ OnIndevFallbackKey (
       Idx = (Found + 1) % mNavCount;
     } else {
       Idx = (Found == 0) ? (mNavCount - 1) : (Found - 1);
+    }
+
+    //
+    // Arrows only: scroll first while content between here and the target
+    // has not been on screen yet; the focus stays where it is.
+    //
+    if (((Key == LV_KEY_UP) || (Key == LV_KEY_DOWN)) &&
+        PcdGetBool (PcdLvglScrollBeforeFocus) &&
+        ScrollBeforeFocus (Found, Idx, Forward))
+    {
+      return;
     }
 
     //
@@ -3057,6 +3124,109 @@ OnDateTimeReady (
   (VOID)StageDateTimeUserInput (Ctx, TRUE);
 }
 
+/**
+  ESC on the focused control, also used by the chrome Back button: close an
+  open dropdown, revert a dropdown keyboard edit, or leave the form.
+**/
+STATIC
+VOID
+HandleEscKey (
+  VOID
+  )
+{
+  bool      Editing;
+  lv_obj_t  *Focused;
+
+  Editing = lv_group_get_editing (mSession.Group);
+
+  //
+  // If a dropdown popup is open (mouse-click or Enter-toggle), ESC
+  // should close the popup, not exit the form.
+  //
+  Focused = lv_group_get_focused (mSession.Group);
+  if ((Focused != NULL) &&
+      lv_obj_check_type (Focused, &lv_dropdown_class) &&
+      lv_dropdown_is_open (Focused))
+  {
+    lv_dropdown_close (Focused);
+    if (Editing) {
+      lv_group_set_editing (mSession.Group, false);
+    }
+
+    return;
+  }
+
+  if (Editing &&
+      (mEditingDropdown != NULL) &&
+      (Focused == mEditingDropdown))
+  {
+    //
+    // ESC during dropdown keyboard-edit: revert the selection and stay
+    // on the form. Text fields below fall through to RequestUserExit so
+    // a single ESC flushes the edit and leaves.
+    //
+    lv_dropdown_set_selected (mEditingDropdown, mEditingDropdownOrigSel);
+    mEditingDropdown = NULL;
+    lv_group_set_editing (mSession.Group, false);
+    return;
+  }
+
+  if (Editing) {
+    lv_group_set_editing (mSession.Group, false);
+  }
+
+  if (!IsFrontPageForm ()) {
+    if (PcdGetBool (PcdLvglFrontPageTabs) && mTabs.AtRoot) {
+      if (mPopupOverlay == NULL) {
+        ShowPopup (
+          mSession.Group,
+          "Exit Setup",
+          "Discard changes and exit Setup?",
+          "Yes",
+          BROWSER_ACTION_FORM_EXIT,
+          FALSE,
+          LvglPopupPurposeExitSetup
+          );
+      }
+    } else {
+      RequestUserExit (BROWSER_ACTION_FORM_EXIT, 0, NULL);
+    }
+  } else if (PcdGetBool (PcdLvglFrontPageTabs) &&
+             (mTabs.Count > 0) &&
+             (mTabs.Active < mTabs.Count) &&
+             (mTabs.Tab[mTabs.Active].Kind == LvglTabKindSaveExit))
+  {
+    if (mPopupOverlay == NULL) {
+      ShowPopup (
+        mSession.Group,
+        "Exit Setup",
+        "Discard changes and exit Setup?",
+        "Yes",
+        BROWSER_ACTION_FORM_EXIT,
+        FALSE,
+        LvglPopupPurposeExitSetup
+        );
+    }
+  }
+}
+
+/**
+  Chrome Back click: same path as ESC on the focused control.
+**/
+VOID
+EFIAPI
+LvglRendererGoBack (
+  VOID
+  )
+{
+  if ((mSession.Group == NULL) || (mPopupOverlay != NULL)) {
+    return;
+  }
+
+  DEBUG ((DEBUG_INFO, "LvglRenderer: back click\n"));
+  HandleEscKey ();
+}
+
 STATIC
 VOID
 OnNavKey (
@@ -3082,6 +3252,14 @@ OnNavKey (
   }
 
   //
+  // OnIndevFallbackKey owns PageUp / PageDown; keep them from the widget.
+  //
+  if ((Key == LV_KEY_PAGE_UP) || (Key == LV_KEY_PAGE_DOWN)) {
+    lv_event_stop_processing (Event);
+    return;
+  }
+
+  //
   // Defer all key handling to OnPopupKey when a popup is visible.
   //
   if (mPopupOverlay != NULL) {
@@ -3089,78 +3267,7 @@ OnNavKey (
   }
 
   if (Key == LV_KEY_ESC) {
-    //
-    // If a dropdown popup is open (mouse-click or Enter-toggle), ESC
-    // should close the popup, not exit the form.
-    //
-    Focused = lv_group_get_focused (mSession.Group);
-    if ((Focused != NULL) &&
-        lv_obj_check_type (Focused, &lv_dropdown_class) &&
-        lv_dropdown_is_open (Focused))
-    {
-      lv_dropdown_close (Focused);
-      if (Editing) {
-        lv_group_set_editing (mSession.Group, false);
-      }
-
-      lv_event_stop_processing (Event);
-      return;
-    }
-
-    if (Editing &&
-        (mEditingDropdown != NULL) &&
-        (Focused == mEditingDropdown))
-    {
-      //
-      // ESC during dropdown keyboard-edit: revert the selection and stay
-      // on the form. Text fields below fall through to RequestUserExit so
-      // a single ESC flushes the edit and leaves.
-      //
-      lv_dropdown_set_selected (mEditingDropdown, mEditingDropdownOrigSel);
-      mEditingDropdown = NULL;
-      lv_group_set_editing (mSession.Group, false);
-      lv_event_stop_processing (Event);
-      return;
-    }
-
-    if (Editing) {
-      lv_group_set_editing (mSession.Group, false);
-    }
-
-    if (!IsFrontPageForm ()) {
-      if (PcdGetBool (PcdLvglFrontPageTabs) && mTabs.AtRoot) {
-        if (mPopupOverlay == NULL) {
-          ShowPopup (
-            mSession.Group,
-            "Exit Setup",
-            "Discard changes and exit Setup?",
-            "Yes",
-            BROWSER_ACTION_FORM_EXIT,
-            FALSE,
-            LvglPopupPurposeExitSetup
-            );
-        }
-      } else {
-        RequestUserExit (BROWSER_ACTION_FORM_EXIT, 0, NULL);
-      }
-    } else if (PcdGetBool (PcdLvglFrontPageTabs) &&
-               (mTabs.Count > 0) &&
-               (mTabs.Active < mTabs.Count) &&
-               (mTabs.Tab[mTabs.Active].Kind == LvglTabKindSaveExit))
-    {
-      if (mPopupOverlay == NULL) {
-        ShowPopup (
-          mSession.Group,
-          "Exit Setup",
-          "Discard changes and exit Setup?",
-          "Yes",
-          BROWSER_ACTION_FORM_EXIT,
-          FALSE,
-          LvglPopupPurposeExitSetup
-          );
-      }
-    }
-
+    HandleEscKey ();
     lv_event_stop_processing (Event);
     return;
   }
@@ -3374,6 +3481,10 @@ ScrollNavIntoView (
   int32_t   ItemH;
   int32_t   ViewH;
 
+  if (mNavScrollHold) {
+    return;
+  }
+
   Target = NavScrollTarget (NavWidget);
 
   if (mContentPanel == NULL) {
@@ -3404,6 +3515,242 @@ OnNavFocused (
   )
 {
   ScrollNavIntoView (lv_event_get_target_obj (Event));
+}
+
+/**
+  Visible height of the content panel (without top/bottom padding).
+**/
+STATIC
+int32_t
+ContentViewHeight (
+  VOID
+  )
+{
+  int32_t  ViewH;
+
+  ViewH  = lv_obj_get_height (mContentPanel);
+  ViewH -= lv_obj_get_style_pad_top (mContentPanel, LV_PART_MAIN);
+  ViewH -= lv_obj_get_style_pad_bottom (mContentPanel, LV_PART_MAIN);
+  return ViewH;
+}
+
+/**
+  One page of scrolling: the visible height minus one text line of the
+  content panel font.
+**/
+STATIC
+int32_t
+ContentPageStep (
+  IN int32_t  ViewH
+  )
+{
+  CONST lv_font_t  *Font;
+  int32_t          LineH;
+
+  Font  = lv_obj_get_style_text_font (mContentPanel, LV_PART_MAIN);
+  LineH = (Font != NULL) ? (int32_t)lv_font_get_line_height (Font) : 0;
+
+  return MAX (ViewH - LineH, 1);
+}
+
+/**
+  Content above (Above = TRUE) or below the visible part of the panel, in
+  pixels; 0 when there is none.
+**/
+STATIC
+int32_t
+ContentHidden (
+  IN BOOLEAN  Above
+  )
+{
+  uint32_t  Count;
+  uint32_t  Idx;
+  lv_obj_t  *Child;
+  int32_t   Top;
+  int32_t   Hidden;
+  int32_t   Edge;
+
+  Top    = lv_obj_get_scroll_y (mContentPanel);
+  Hidden = 0;
+  Count  = lv_obj_get_child_count (mContentPanel);
+  for (Idx = 0; Idx < Count; Idx++) {
+    Child = lv_obj_get_child (mContentPanel, (int32_t)Idx);
+    if (lv_obj_has_flag (Child, LV_OBJ_FLAG_HIDDEN) ||
+        lv_obj_has_flag (Child, LV_OBJ_FLAG_FLOATING))
+    {
+      continue;
+    }
+
+    if (Above) {
+      Edge = Top - lv_obj_get_y (Child);
+    } else {
+      Edge = lv_obj_get_y (Child) + lv_obj_get_height (Child) - (Top + ContentViewHeight ());
+    }
+
+    Hidden = MAX (Hidden, Edge);
+  }
+
+  return Hidden;
+}
+
+/**
+  PageUp / PageDown: scroll the content by one page (no wrap; stops at the
+  top / bottom), then focus the first (down) or last (up) fully visible nav
+  row. When the panel cannot scroll any further, focus the first (up) or
+  last (down) nav row instead. The focus never moves against the key: a
+  pick before (down) or after (up) the focused row only scrolls.
+**/
+STATIC
+VOID
+PageScrollAndFocus (
+  IN BOOLEAN  Down
+  )
+{
+  int32_t   ViewH;
+  int32_t   Step;
+  int32_t   Before;
+  int32_t   Top;
+  int32_t   ItemY;
+  UINTN     Idx;
+  UINTN     Pick;
+  UINTN     Cur;
+  lv_obj_t  *Focused;
+  lv_obj_t  *Target;
+
+  if (mContentPanel == NULL) {
+    return;
+  }
+
+  Focused = lv_group_get_focused (mSession.Group);
+  Cur     = mNavCount;
+  for (Idx = 0; Idx < mNavCount; Idx++) {
+    if (mNavList[Idx] == Focused) {
+      Cur = Idx;
+      break;
+    }
+  }
+
+  lv_obj_update_layout (mContentPanel);
+  ViewH  = ContentViewHeight ();
+  Step   = ContentPageStep (ViewH);
+  Before = lv_obj_get_scroll_y (mContentPanel);
+  lv_obj_scroll_by_bounded (mContentPanel, 0, Down ? -Step : Step, LV_ANIM_OFF);
+  lv_obj_update_layout (mContentPanel);
+  Top = lv_obj_get_scroll_y (mContentPanel);
+
+  Pick = mNavCount;
+  for (Idx = 0; Idx < mNavCount; Idx++) {
+    if (lv_obj_has_flag (mNavList[Idx], LV_OBJ_FLAG_HIDDEN)) {
+      continue;
+    }
+
+    if (Top == Before) {
+      //
+      // Already at the top / bottom: first (up) or last (down) nav row.
+      //
+      Pick = Idx;
+      if (!Down) {
+        break;
+      }
+
+      continue;
+    }
+
+    Target = NavScrollTarget (mNavList[Idx]);
+    ItemY  = lv_obj_get_y (Target);
+    if ((ItemY >= Top) && (ItemY + lv_obj_get_height (Target) <= Top + ViewH)) {
+      Pick = Idx;
+      if (Down) {
+        break;
+      }
+    }
+  }
+
+  if ((Pick < mNavCount) && (Cur < mNavCount) && (Down ? (Pick < Cur) : (Pick > Cur))) {
+    Pick = mNavCount;
+  }
+
+  DEBUG ((
+    DEBUG_INFO,
+    "LvglRenderer: page %a scroll_y=%d focus=%d\n",
+    Down ? "down" : "up",
+    Top,
+    (Pick < mNavCount) ? (INT32)Pick : ((Cur < mNavCount) ? (INT32)Cur : -1)
+    ));
+
+  if ((Pick == mNavCount) || (Pick == Cur)) {
+    return;
+  }
+
+  if (TryCommitFocusedThenNav (Pick)) {
+    return;
+  }
+
+  mNavScrollHold = TRUE;
+  lv_group_focus_obj (mNavList[Pick]);
+  mNavScrollHold = FALSE;
+}
+
+/**
+  UP/DOWN from nav row From to To. Scroll one page instead of moving the
+  focus when the target is more than a page outside the view, or when the
+  move wraps while content is still hidden in the travel direction.
+
+  @retval TRUE  Scrolled; the caller must not move the focus.
+**/
+STATIC
+BOOLEAN
+ScrollBeforeFocus (
+  IN UINTN    From,
+  IN UINTN    To,
+  IN BOOLEAN  Forward
+  )
+{
+  lv_obj_t  *Target;
+  int32_t   ViewH;
+  int32_t   Step;
+  int32_t   Top;
+  int32_t   Dist;
+
+  if (mContentPanel == NULL) {
+    return FALSE;
+  }
+
+  lv_obj_update_layout (mContentPanel);
+  ViewH = ContentViewHeight ();
+  Step  = ContentPageStep (ViewH);
+  Top   = lv_obj_get_scroll_y (mContentPanel);
+
+  if (Forward ? (To <= From) : (To >= From)) {
+    //
+    // Last row + DOWN / first row + UP: reach the end before wrapping.
+    //
+    Dist = ContentHidden (!Forward);
+    if (Dist <= 0) {
+      return FALSE;
+    }
+  } else {
+    Target = NavScrollTarget (mNavList[To]);
+    if (Forward) {
+      Dist = lv_obj_get_y (Target) + lv_obj_get_height (Target) - (Top + ViewH);
+    } else {
+      Dist = Top - lv_obj_get_y (Target);
+    }
+
+    if (Dist <= Step) {
+      return FALSE;
+    }
+  }
+
+  lv_obj_scroll_by_bounded (mContentPanel, 0, Forward ? -MIN (Step, Dist) : MIN (Step, Dist), LV_ANIM_OFF);
+  DEBUG ((
+    DEBUG_INFO,
+    "LvglRenderer: scroll before focus %a scroll_y=%d focus=%u\n",
+    Forward ? "down" : "up",
+    lv_obj_get_scroll_y (mContentPanel),
+    (UINT32)From
+    ));
+  return TRUE;
 }
 
 STATIC
@@ -4977,12 +5324,18 @@ LvglRenderForm (
   // overlays the chrome; hidden until a String/Password/Numeric textarea
   // gains focus (see OnTextareaFocused).
   //
-  mSession.OnScreenKb = lv_keyboard_create (mSession.Screen);
-  lv_obj_set_size (mSession.OnScreenKb, LV_PCT (100), LV_PCT (40));
-  lv_obj_align (mSession.OnScreenKb, LV_ALIGN_BOTTOM_MID, 0, 0);
-  LvglThemeStyleKeyboard (mSession.OnScreenKb);
-  lv_obj_add_flag (mSession.OnScreenKb, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_add_event_cb (mSession.OnScreenKb, OnKeyboardCancel, LV_EVENT_CANCEL, NULL);
+  // PcdLvglOnScreenKeyboard FALSE: no keyboard; OnTextareaFocused then
+  // returns at its OnScreenKb == NULL check.
+  //
+  if (PcdGetBool (PcdLvglOnScreenKeyboard)) {
+    mSession.OnScreenKb = lv_keyboard_create (mSession.Screen);
+    lv_obj_set_size (mSession.OnScreenKb, LV_PCT (100), LV_PCT (40));
+    lv_obj_align (mSession.OnScreenKb, LV_ALIGN_BOTTOM_MID, 0, 0);
+    LvglThemeStyleKeyboard (mSession.OnScreenKb);
+    lv_obj_add_flag (mSession.OnScreenKb, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_event_cb (mSession.OnScreenKb, OnKeyboardCancel, LV_EVENT_CANCEL, NULL);
+  }
+
   //
   // Don't add the keyboard to the form's nav group: it's mouse-only.
   // Arrow-key navigation between form fields keeps working unchanged.

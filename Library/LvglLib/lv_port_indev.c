@@ -55,6 +55,7 @@
  *********************/
 #include "lv_port_indev.h"
 #include <Library/LvglThemeLib.h>
+#include <Library/PcdLib.h>
 #include <Protocol/SimplePointer.h>
 
 // Required for lv_uefi_keypad_drain() to poke private keypad state
@@ -448,8 +449,12 @@ keypad_read (
       case SCAN_LEFT:      data->key = LV_KEY_LEFT;      break;
       case SCAN_ESC:       data->key = LV_KEY_ESC;       break;
       case SCAN_DELETE:    data->key = LV_KEY_DEL;       break;
-      case SCAN_PAGE_DOWN: data->key = LV_KEY_NEXT;      break;
-      case SCAN_PAGE_UP:   data->key = LV_KEY_PREV;      break;
+      case SCAN_PAGE_DOWN:
+        data->key = PcdGetBool (PcdLvglPageKeysScroll) ? LV_KEY_PAGE_DOWN : LV_KEY_NEXT;
+        break;
+      case SCAN_PAGE_UP:
+        data->key = PcdGetBool (PcdLvglPageKeysScroll) ? LV_KEY_PAGE_UP : LV_KEY_PREV;
+        break;
       case SCAN_HOME:      data->key = LV_KEY_HOME;      break;
       case SCAN_END:       data->key = LV_KEY_END;       break;
       case SCAN_F1:        data->key = LV_KEY_F1;        break;
