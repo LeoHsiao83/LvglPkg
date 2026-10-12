@@ -46,6 +46,7 @@
   BmpSupportLib
   DevicePathLib
   MemoryAllocationLib
+  TimerLib
   HiiLib
   PcdLib
   LvglUiConfigLib

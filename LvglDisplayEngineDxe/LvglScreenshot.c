@@ -10,6 +10,7 @@
 #include <Library/BmpSupportLib.h>
 #include <Library/DevicePathLib.h>
 #include <Library/PrintLib.h>
+#include <Library/TimerLib.h>
 #include <Library/UefiRuntimeServicesTableLib.h>
 #include <Protocol/GraphicsOutput.h>
 #include <Protocol/SimpleFileSystem.h>
@@ -48,7 +49,52 @@ IsUsbVolume (
 }
 
 /**
-  Read the whole screen of the display LVGL draws on into a BMP image.
+  Milliseconds since performance counter value @a Start.
+**/
+STATIC
+UINT32
+ElapsedMs (
+  IN UINT64  Start
+  )
+{
+  return (UINT32)DivU64x32 (GetTimeInNanoSecond (GetPerformanceCounter () - Start), 1000000);
+}
+
+/**
+  The LVGL frame buffer when it holds the whole @a Width x @a Height screen
+  in the GOP BLT pixel layout (DIRECT render mode, 32-bit XRGB/ARGB); NULL
+  otherwise.
+**/
+STATIC
+EFI_GRAPHICS_OUTPUT_BLT_PIXEL *
+LvglFrameBuffer (
+  IN UINT32  Width,
+  IN UINT32  Height
+  )
+{
+  lv_display_t   *Disp;
+  lv_draw_buf_t  *Buf;
+
+  Disp = lv_display_get_default ();
+  if ((Disp == NULL) || (lv_display_get_render_mode (Disp) != LV_DISPLAY_RENDER_MODE_DIRECT)) {
+    return NULL;
+  }
+
+  Buf = lv_display_get_buf_active (Disp);
+  if ((Buf == NULL) || (Buf->data == NULL) ||
+      ((Buf->header.cf != LV_COLOR_FORMAT_XRGB8888) && (Buf->header.cf != LV_COLOR_FORMAT_ARGB8888)) ||
+      (Buf->header.w != Width) || (Buf->header.h != Height) ||
+      (Buf->header.stride != Width * sizeof (EFI_GRAPHICS_OUTPUT_BLT_PIXEL)))
+  {
+    return NULL;
+  }
+
+  return (EFI_GRAPHICS_OUTPUT_BLT_PIXEL *)Buf->data;
+}
+
+/**
+  Read the whole screen of the display LVGL draws on into a BMP image. The
+  pixels come from the LVGL frame buffer; GOP Blt is the fallback.
 
   @param[out] Bmp      Allocated BMP image; free with FreePool.
   @param[out] BmpSize  Size of @a Bmp in bytes.
@@ -64,8 +110,11 @@ CaptureScreen (
   EFI_HANDLE                     GopHandle;
   EFI_GRAPHICS_OUTPUT_PROTOCOL   *Gop;
   EFI_GRAPHICS_OUTPUT_BLT_PIXEL  *Blt;
+  EFI_GRAPHICS_OUTPUT_BLT_PIXEL  *Pixels;
   UINT32                         Width;
   UINT32                         Height;
+  UINT64                         Start;
+  UINT32                         ReadMs;
 
   *Bmp     = NULL;
   *BmpSize = 0;
@@ -82,17 +131,36 @@ CaptureScreen (
 
   Width  = Gop->Mode->Info->HorizontalResolution;
   Height = Gop->Mode->Info->VerticalResolution;
-  Blt    = AllocatePool ((UINTN)Width * Height * sizeof (EFI_GRAPHICS_OUTPUT_BLT_PIXEL));
-  if (Blt == NULL) {
-    return EFI_OUT_OF_RESOURCES;
+  Blt    = NULL;
+  Start  = GetPerformanceCounter ();
+  Pixels = LvglFrameBuffer (Width, Height);
+  if (Pixels == NULL) {
+    Blt = AllocatePool ((UINTN)Width * Height * sizeof (EFI_GRAPHICS_OUTPUT_BLT_PIXEL));
+    if (Blt == NULL) {
+      return EFI_OUT_OF_RESOURCES;
+    }
+
+    Status = Gop->Blt (Gop, Blt, EfiBltVideoToBltBuffer, 0, 0, 0, 0, Width, Height, 0);
+    Pixels = Blt;
   }
 
-  Status = Gop->Blt (Gop, Blt, EfiBltVideoToBltBuffer, 0, 0, 0, 0, Width, Height, 0);
+  ReadMs = ElapsedMs (Start);
   if (!EFI_ERROR (Status)) {
-    Status = TranslateGopBltToBmp (Blt, Height, Width, Bmp, BmpSize);
+    Start  = GetPerformanceCounter ();
+    Status = TranslateGopBltToBmp (Pixels, Height, Width, Bmp, BmpSize);
+    DEBUG ((
+      DEBUG_INFO,
+      "LvglScreenshot: read %a %u ms, bmp %u ms\n",
+      (Blt == NULL) ? "lvgl" : "gop",
+      ReadMs,
+      ElapsedMs (Start)
+      ));
   }
 
-  FreePool (Blt);
+  if (Blt != NULL) {
+    FreePool (Blt);
+  }
+
   return Status;
 }
 
@@ -193,6 +261,7 @@ LvglScreenshotSave (
   VOID                             *Bmp;
   UINT32                           BmpSize;
   UINTN                            WriteSize;
+  UINT64                           Start;
 
   FileName[0] = L'\0';
   *FileSize   = 0;
@@ -240,6 +309,7 @@ LvglScreenshotSave (
       continue;
     }
 
+    Start     = GetPerformanceCounter ();
     WriteSize = BmpSize;
     Status    = File->Write (File, &WriteSize, Bmp);
     if (!EFI_ERROR (Status) && (WriteSize != BmpSize)) {
@@ -256,6 +326,8 @@ LvglScreenshotSave (
       File->Close (File);
       *FileSize = BmpSize;
     }
+
+    DEBUG ((DEBUG_INFO, "LvglScreenshot: write+flush %u ms\n", ElapsedMs (Start)));
 
     Root->Close (Root);
     break;
