@@ -72,6 +72,8 @@
   gLvglPkgTokenSpaceGuid.PcdLvglScreenshotScanCode
   gLvglPkgTokenSpaceGuid.PcdLvglOnScreenKeyboard
   gLvglPkgTokenSpaceGuid.PcdLvglScrollBeforeFocus
+  gLvglPkgTokenSpaceGuid.PcdLvglFormEntryTop
+  gLvglPkgTokenSpaceGuid.PcdLvglNavUpWrap
 
 [BuildOptions]
   # Same LVGL header warnings as LvglLib.inf.

@@ -83,3 +83,13 @@
   ## When TRUE, UP/DOWN scroll one page first (focus unchanged) when the next
   ## row is further than a page away or the move would wrap past hidden content.
   gLvglPkgTokenSpaceGuid.PcdLvglScrollBeforeFocus|FALSE|BOOLEAN|0x00000010
+
+  ## When TRUE, a form entered for the first time (Setup entry, tab switch, REF)
+  ## opens scrolled to the top with the focus on the browser's row; a rebuild of
+  ## the same form keeps its scroll position; UP/DOWN toward an off-screen focus
+  ## scroll toward it first. FALSE keeps the focus row scrolled into view.
+  gLvglPkgTokenSpaceGuid.PcdLvglFormEntryTop|FALSE|BOOLEAN|0x00000011
+
+  ## When TRUE, UP on the first row wraps to the last row. FALSE scrolls up to
+  ## any hidden content first and then stays on the first row.
+  gLvglPkgTokenSpaceGuid.PcdLvglNavUpWrap|TRUE|BOOLEAN|0x00000012

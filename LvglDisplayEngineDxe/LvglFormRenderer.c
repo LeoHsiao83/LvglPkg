@@ -57,6 +57,29 @@ STATIC lv_obj_t  *mContentPanel = NULL;
 STATIC BOOLEAN  mNavScrollHold = FALSE;
 
 //
+// PcdLvglFormEntryTop: forms on the way from the tab root (or Setup entry) to
+// the current form, newest last. A FormDisplay of the newest form is a
+// rebuild, of the one before it a return; anything else is a first entry.
+// mFormEntryNewRoot is set when the tab code starts a new tab root.
+//
+#define LVGL_FORM_PATH_MAX  16
+
+typedef struct {
+  EFI_GUID  FormSetGuid;
+  UINT16    FormId;
+} LVGL_FORM_ID;
+
+typedef enum {
+  LvglFormEntryTop,
+  LvglFormEntryRestore,
+  LvglFormEntryRebuild
+} LVGL_FORM_ENTRY;
+
+STATIC LVGL_FORM_ID  mFormPath[LVGL_FORM_PATH_MAX];
+STATIC UINTN         mFormPathCount    = 0;
+STATIC BOOLEAN       mFormEntryNewRoot = FALSE;
+
+//
 // Loaded from LvglUiScale each FormDisplay(); mirrors SubtitleShowsDeviceModel.
 //
 STATIC BOOLEAN  mSubtitleShowsDeviceModel = FALSE;
@@ -226,6 +249,7 @@ STATIC BOOLEAN CompletePendingLeaveIfReady (VOID);
 STATIC BOOLEAN TryCommitFocusedThenNav (IN UINTN DestNavIdx);
 STATIC VOID PageScrollAndFocus (IN BOOLEAN Down);
 STATIC BOOLEAN ScrollBeforeFocus (IN UINTN From, IN UINTN To, IN BOOLEAN Forward);
+STATIC BOOLEAN ScrollTowardFocus (IN UINTN Focus, IN BOOLEAN Forward);
 
 //
 // ---- Helper: UCS-2 string to UTF-8 for LVGL ----
@@ -1027,8 +1051,9 @@ HandleTabsBeforeBuild (
       if ((mPendingTab < mTabs.Count) &&
           (mTabs.Tab[mPendingTab].Kind == LvglTabKindSaveExit))
       {
-        mTabs.Active = mPendingTab;
-        mPendingTab  = MAX_UINTN;
+        mTabs.Active      = mPendingTab;
+        mPendingTab       = MAX_UINTN;
+        mFormEntryNewRoot = TRUE;
         DEBUG ((
           DEBUG_INFO,
           "LvglRenderer: tabs pending SaveExit Active=%u Count=%u\n",
@@ -1123,6 +1148,7 @@ HandleTabsBeforeBuild (
     mTabRootFormId     = FormData->FormId;
     mNextFormIsTabRoot = FALSE;
     mTabs.AtRoot       = TRUE;
+    mFormEntryNewRoot  = TRUE;
     DEBUG ((
       DEBUG_INFO,
       "LvglRenderer: tabs root set FormId=0x%x\n",
@@ -2375,6 +2401,28 @@ OnIndevFallbackKey (
       }
     }
 
+    //
+    // Arrows toward an off-screen focus row: scroll to it first.
+    //
+    if (((Key == LV_KEY_UP) || (Key == LV_KEY_DOWN)) &&
+        (Found < mNavCount) &&
+        PcdGetBool (PcdLvglFormEntryTop) &&
+        ScrollTowardFocus (Found, Forward))
+    {
+      return;
+    }
+
+    //
+    // UP on the first row without wrap: scroll up to hidden content, then stay.
+    //
+    if ((Key == LV_KEY_UP) && (Found == 0) && !PcdGetBool (PcdLvglNavUpWrap)) {
+      if (!ScrollBeforeFocus (Found, mNavCount - 1, FALSE)) {
+        DEBUG ((DEBUG_INFO, "LvglRenderer: up at first row, no wrap\n"));
+      }
+
+      return;
+    }
+
     if (Found == mNavCount) {
       Found = Forward ? (mNavCount - 1) : 0;
     }
@@ -3535,6 +3583,25 @@ ContentViewHeight (
 }
 
 /**
+  TRUE when nav row Idx lies fully inside the visible part of the panel.
+**/
+STATIC
+BOOLEAN
+NavRowFullyVisible (
+  IN UINTN  Idx
+  )
+{
+  lv_obj_t  *Target;
+  int32_t   Top;
+  int32_t   ItemY;
+
+  Target = NavScrollTarget (mNavList[Idx]);
+  Top    = lv_obj_get_scroll_y (mContentPanel);
+  ItemY  = lv_obj_get_y (Target);
+  return (BOOLEAN)((ItemY >= Top) && (ItemY + lv_obj_get_height (Target) <= Top + ContentViewHeight ()));
+}
+
+/**
   One page of scrolling: the visible height minus one text line of the
   content panel font.
 **/
@@ -3749,6 +3816,58 @@ ScrollBeforeFocus (
     Forward ? "down" : "up",
     lv_obj_get_scroll_y (mContentPanel),
     (UINT32)From
+    ));
+  return TRUE;
+}
+
+/**
+  PcdLvglFormEntryTop: DOWN with the focus row below the view, or UP with it
+  above, scrolls toward it by at most one page; the focus stays.
+
+  @retval TRUE  Scrolled; the caller must not move the focus.
+**/
+STATIC
+BOOLEAN
+ScrollTowardFocus (
+  IN UINTN    Focus,
+  IN BOOLEAN  Forward
+  )
+{
+  lv_obj_t  *Target;
+  int32_t   ViewH;
+  int32_t   Top;
+  int32_t   ItemY;
+  int32_t   Dist;
+
+  if (mContentPanel == NULL) {
+    return FALSE;
+  }
+
+  lv_obj_update_layout (mContentPanel);
+  ViewH  = ContentViewHeight ();
+  Top    = lv_obj_get_scroll_y (mContentPanel);
+  Target = NavScrollTarget (mNavList[Focus]);
+  ItemY  = lv_obj_get_y (Target);
+  if (Forward) {
+    //
+    // A row taller than the view only needs its top edge on screen.
+    //
+    Dist = MIN (ItemY + lv_obj_get_height (Target) - (Top + ViewH), ItemY - Top);
+  } else {
+    Dist = Top - ItemY;
+  }
+
+  if (Dist <= 0) {
+    return FALSE;
+  }
+
+  lv_obj_scroll_by_bounded (mContentPanel, 0, Forward ? -MIN (ContentPageStep (ViewH), Dist) : MIN (ContentPageStep (ViewH), Dist), LV_ANIM_OFF);
+  DEBUG ((
+    DEBUG_INFO,
+    "LvglRenderer: scroll to focus %a scroll_y=%d focus=%u\n",
+    Forward ? "down" : "up",
+    lv_obj_get_scroll_y (mContentPanel),
+    (UINT32)Focus
     ));
   return TRUE;
 }
@@ -5108,6 +5227,69 @@ BuildFormWidgets (
 }
 
 /**
+  PcdLvglFormEntryTop: classify this FormDisplay against mFormPath and update
+  the path (see mFormPath).
+**/
+STATIC
+LVGL_FORM_ENTRY
+ClassifyFormEntry (
+  IN FORM_DISPLAY_ENGINE_FORM  *FormData
+  )
+{
+  if (mFormEntryNewRoot) {
+    mFormEntryNewRoot = FALSE;
+    mFormPathCount    = 0;
+  }
+
+  if ((mFormPathCount > 0) &&
+      CompareGuid (&mFormPath[mFormPathCount - 1].FormSetGuid, &FormData->FormSetGuid) &&
+      (mFormPath[mFormPathCount - 1].FormId == FormData->FormId))
+  {
+    return LvglFormEntryRebuild;
+  }
+
+  if ((mFormPathCount > 1) &&
+      CompareGuid (&mFormPath[mFormPathCount - 2].FormSetGuid, &FormData->FormSetGuid) &&
+      (mFormPath[mFormPathCount - 2].FormId == FormData->FormId))
+  {
+    mFormPathCount--;
+    return LvglFormEntryRestore;
+  }
+
+  if (mFormPathCount == LVGL_FORM_PATH_MAX) {
+    CopyMem (&mFormPath[0], &mFormPath[1], (LVGL_FORM_PATH_MAX - 1) * sizeof (LVGL_FORM_ID));
+    mFormPathCount--;
+  }
+
+  CopyGuid (&mFormPath[mFormPathCount].FormSetGuid, &FormData->FormSetGuid);
+  mFormPath[mFormPathCount].FormId = FormData->FormId;
+  mFormPathCount++;
+  return LvglFormEntryTop;
+}
+
+/**
+  Index of the focused row in mNavList, or mNavCount when none.
+**/
+STATIC
+UINTN
+FocusedNavIndex (
+  VOID
+  )
+{
+  lv_obj_t  *Focused;
+  UINTN     Idx;
+
+  Focused = (mSession.Group != NULL) ? lv_group_get_focused (mSession.Group) : NULL;
+  for (Idx = 0; Idx < mNavCount; Idx++) {
+    if (mNavList[Idx] == Focused) {
+      return Idx;
+    }
+  }
+
+  return mNavCount;
+}
+
+/**
   Run one LVGL frame, then idle until the next LVGL timer is due.
 
   WaitForEvent is only legal at TPL_APPLICATION; at a raised TPL this falls
@@ -5163,10 +5345,14 @@ LvglRenderForm (
   OUT USER_INPUT                *UserInputData
   )
 {
-  EFI_STATUS  Status;
-  lv_obj_t    *ContentPanel;
-  lv_obj_t    *PrevScreen;
-  lv_group_t  *PrevGroup;
+  EFI_STATUS       Status;
+  lv_obj_t         *ContentPanel;
+  lv_obj_t         *PrevScreen;
+  lv_group_t       *PrevGroup;
+  LVGL_FORM_ENTRY  Entry;
+  int32_t          PrevScrollY;
+  UINTN            PrevFocusIdx;
+  UINTN            FocusIdx;
 
   ASSERT (FormData != NULL);
   ASSERT (UserInputData != NULL);
@@ -5206,6 +5392,21 @@ LvglRenderForm (
   //
   if (HandleTabsBeforeBuild (FormData, UserInputData)) {
     return EFI_SUCCESS;
+  }
+
+  //
+  // PcdLvglFormEntryTop: classify this FormDisplay and keep the previous
+  // form's scroll position and focus row for a rebuild.
+  //
+  Entry        = LvglFormEntryRestore;
+  PrevScrollY  = 0;
+  PrevFocusIdx = MAX_UINTN;
+  if (PcdGetBool (PcdLvglFormEntryTop)) {
+    Entry = ClassifyFormEntry (FormData);
+    if ((Entry == LvglFormEntryRebuild) && (mContentPanel != NULL)) {
+      PrevScrollY  = lv_obj_get_scroll_y (mContentPanel);
+      PrevFocusIdx = FocusedNavIndex ();
+    }
   }
 
   //
@@ -5363,7 +5564,12 @@ LvglRenderForm (
   // Restore keyboard focus. Prefer the destination field after a nav-time
   // commit; otherwise use the browser highlight.
   //
+  //
+  // PcdLvglFormEntryTop: a first entry stays at the top and a rebuild keeps
+  // its scroll position, so setting the focus must not scroll.
+  //
   lv_obj_update_layout (mSession.Screen);
+  mNavScrollHold = (BOOLEAN)(Entry != LvglFormEntryRestore);
   if (mRestoreFocusPending) {
     if (mRestoreFocusNavIdx < mNavCount) {
       lv_group_focus_obj (mNavList[mRestoreFocusNavIdx]);
@@ -5371,14 +5577,41 @@ LvglRenderForm (
 
     mRestoreFocusPending = FALSE;
   } else if (FormData->HighLightedStatement != NULL) {
-    UINTN  FocusIdx;
-
     for (FocusIdx = 0; FocusIdx < mNavCount; FocusIdx++) {
       if (mNavStatement[FocusIdx] == FormData->HighLightedStatement) {
         lv_group_focus_obj (mNavList[FocusIdx]);
         break;
       }
     }
+  }
+
+  mNavScrollHold = FALSE;
+  if (PcdGetBool (PcdLvglFormEntryTop)) {
+    FocusIdx = FocusedNavIndex ();
+    if (Entry == LvglFormEntryTop) {
+      lv_obj_scroll_to_y (mContentPanel, 0, LV_ANIM_OFF);
+    } else if (Entry == LvglFormEntryRebuild) {
+      //
+      // Keep the scroll position (clamped at the bottom). Only a focus that
+      // moved to another row is scrolled into view.
+      //
+      lv_obj_scroll_by_bounded (mContentPanel, 0, -PrevScrollY, LV_ANIM_OFF);
+      if ((FocusIdx < mNavCount) && (FocusIdx != PrevFocusIdx)) {
+        lv_obj_update_layout (mContentPanel);
+        if (!NavRowFullyVisible (FocusIdx)) {
+          lv_obj_scroll_to_view (NavScrollTarget (mNavList[FocusIdx]), LV_ANIM_OFF);
+        }
+      }
+    }
+
+    lv_obj_update_layout (mContentPanel);
+    DEBUG ((
+      DEBUG_INFO,
+      "LvglRenderer: form %a scroll_y=%d focus=%d\n",
+      (Entry == LvglFormEntryTop) ? "entry top" : ((Entry == LvglFormEntryRestore) ? "entry restore" : "rebuild"),
+      lv_obj_get_scroll_y (mContentPanel),
+      (FocusIdx < mNavCount) ? (INT32)FocusIdx : -1
+      ));
   }
 
   //

@@ -242,6 +242,8 @@ Declared in `LvglPkg.dec`:
 | `PcdLvglOnScreenKeyboard` | `TRUE` (default) pops up the on-screen keyboard for a mouse-focused text/numeric field; `FALSE` never creates it |
 | `PcdLvglPageKeysScroll` | When TRUE, PageUp/PageDown scroll one page and focus the first/last fully visible row (no wrap); `FALSE` (default) keeps them as Shift+Tab/Tab |
 | `PcdLvglScrollBeforeFocus` | When TRUE, UP/DOWN scroll one page first, keeping focus, when the next row is more than a page away or a wrap would skip hidden content; `FALSE` (default) moves focus at once |
+| `PcdLvglFormEntryTop` | When TRUE, a form entered for the first time (Setup entry, tab switch, REF) opens at the top with the focus on the browser's row, a rebuild of the same form keeps its scroll position, and UP/DOWN toward an off-screen focus scroll toward it first; `FALSE` (default) scrolls the focus row into view |
+| `PcdLvglNavUpWrap` | `TRUE` (default) wraps UP on the first row to the last row; `FALSE` scrolls up to hidden content first, then stays on the first row |
 
 Example:
 
