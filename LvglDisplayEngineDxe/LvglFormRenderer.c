@@ -57,6 +57,14 @@ STATIC lv_obj_t  *mContentPanel = NULL;
 STATIC BOOLEAN  mNavScrollHold = FALSE;
 
 //
+// Pointer position when the screen was built. Until the pointer moves away
+// from it, hover does not replace the focused row's help.
+//
+STATIC lv_indev_t  *mHoverIndev = NULL;
+STATIC lv_point_t  mHoverStart;
+STATIC BOOLEAN     mHoverReading = FALSE;
+
+//
 // PcdLvglFormEntryTop: forms on the way from the tab root (or Setup entry) to
 // the current form, newest last. A FormDisplay of the newest form is a
 // rebuild, of the one before it a return; anything else is a first entry.
@@ -121,6 +129,12 @@ STATIC UINTN            mEditRegistryCount = 0;
 //
 STATIC BOOLEAN  mRestoreFocusPending = FALSE;
 STATIC UINTN    mRestoreFocusNavIdx  = 0;
+
+//
+// Keys typed before Setup appeared (e.g. the F2 that entered it) are dropped
+// once, before the first event loop of each Setup session.
+//
+STATIC BOOLEAN  mDrainEntryKeys = TRUE;
 
 //
 // Deferred exit/submenu click after committing the focused dirty field once.
@@ -2152,6 +2166,13 @@ HandleFunctionKey (
         (HotKey->KeyData->ScanCode == ScanCode) &&
         (HotKey->KeyData->UnicodeChar == CHAR_NULL))
     {
+      DEBUG ((
+        DEBUG_INFO,
+        "LvglRenderer: hot key ScanCode=0x%x UnicodeChar=0x%x Action=0x%x\n",
+        HotKey->KeyData->ScanCode,
+        HotKey->KeyData->UnicodeChar,
+        HotKey->Action
+        ));
       //
       // For actions that modify settings (Save / Load Defaults), show a
       // confirmation popup instead of immediately exiting. The main event
@@ -3450,6 +3471,33 @@ OnFocusUpdateHelp (
 }
 
 /**
+  Record the pointer position for a newly built screen. The pointer is read
+  once first, without updating the help, so the position is the current one
+  even before the first frame.
+**/
+STATIC
+VOID
+HoverHelpHold (
+  VOID
+  )
+{
+  lv_indev_t  *Indev;
+
+  mHoverIndev = NULL;
+  Indev       = NULL;
+  while ((Indev = lv_indev_get_next (Indev)) != NULL) {
+    if (lv_indev_get_type (Indev) == LV_INDEV_TYPE_POINTER) {
+      mHoverReading = TRUE;
+      lv_indev_read (Indev);
+      mHoverReading = FALSE;
+      lv_indev_get_point (Indev, &mHoverStart);
+      mHoverIndev = Indev;
+      break;
+    }
+  }
+}
+
+/**
   LV_EVENT_HOVER_OVER handler -- update the help pane text while the mouse
   hovers over a statement row.  Bound to both the inner control widget (via
   AddToNavGroup) AND the Row container (via BindRowHover) so the help pane
@@ -3467,12 +3515,26 @@ OnHoverUpdateHelp (
 {
   LVGL_STATEMENT_CONTEXT  *Ctx;
   CHAR8                   *Utf8;
+  lv_point_t              Point;
 
   Ctx = (LVGL_STATEMENT_CONTEXT *)lv_event_get_user_data (Event);
   if ((Ctx == NULL) || (Ctx->Statement == NULL) ||
       (mSession.FormData == NULL) || (mSession.FormData->HiiHandle == NULL))
   {
     return;
+  }
+
+  if (mHoverReading) {
+    return;
+  }
+
+  if (mHoverIndev != NULL) {
+    lv_indev_get_point (mHoverIndev, &Point);
+    if ((Point.x == mHoverStart.x) && (Point.y == mHoverStart.y)) {
+      return;
+    }
+
+    mHoverIndev = NULL;
   }
 
   Utf8 = GetHelpUtf8 (Ctx->Statement, mSession.FormData->HiiHandle);
@@ -3880,8 +3942,12 @@ AddToNavGroup (
   LVGL_STATEMENT_CONTEXT  *Ctx
   )
 {
-  lv_group_add_obj (Group, Widget);
+  //
+  // Clear SCROLL_ON_FOCUS first: adding the first object focuses it, which
+  // would start an animated scroll to it.
+  //
   lv_obj_remove_flag (Widget, LV_OBJ_FLAG_SCROLL_ON_FOCUS);
+  lv_group_add_obj (Group, Widget);
   lv_obj_add_event_cb (Widget, OnNavFocused, LV_EVENT_FOCUSED, NULL);
   lv_obj_add_event_cb (Widget, OnNavKey, LV_EVENT_KEY | LV_EVENT_PREPROCESS, Ctx);
   if (Ctx != NULL) {
@@ -5353,6 +5419,7 @@ LvglRenderForm (
   int32_t          PrevScrollY;
   UINTN            PrevFocusIdx;
   UINTN            FocusIdx;
+  lv_obj_t         *AutoFocus;
 
   ASSERT (FormData != NULL);
   ASSERT (UserInputData != NULL);
@@ -5562,13 +5629,12 @@ LvglRenderForm (
 
   //
   // Restore keyboard focus. Prefer the destination field after a nav-time
-  // commit; otherwise use the browser highlight.
-  //
-  //
-  // PcdLvglFormEntryTop: a first entry stays at the top and a rebuild keeps
-  // its scroll position, so setting the focus must not scroll.
+  // commit; otherwise use the browser highlight. With PcdLvglFormEntryTop a
+  // first entry stays at the top and a rebuild keeps its scroll position, so
+  // setting the focus must not scroll.
   //
   lv_obj_update_layout (mSession.Screen);
+  AutoFocus      = lv_group_get_focused (mSession.Group);
   mNavScrollHold = (BOOLEAN)(Entry != LvglFormEntryRestore);
   if (mRestoreFocusPending) {
     if (mRestoreFocusNavIdx < mNavCount) {
@@ -5585,6 +5651,31 @@ LvglRenderForm (
     }
   }
 
+  //
+  // The group focused the first object while it was added, before its
+  // FOCUSED callbacks (row state, help, OnNavFocused) were bound. If the
+  // focus is still there, send FOCUSED again now, without scrolling.
+  //
+  if ((AutoFocus != NULL) && (lv_group_get_focused (mSession.Group) == AutoFocus)) {
+    mNavScrollHold = TRUE;
+    lv_obj_send_event (AutoFocus, LV_EVENT_FOCUSED, NULL);
+  }
+
+  //
+  // No input device is active while the form is built, so FOCUSED did not
+  // add FOCUS_KEY (the key focus outline). Add it as a key press would.
+  //
+  AutoFocus = lv_group_get_focused (mSession.Group);
+  if (AutoFocus != NULL) {
+    lv_obj_add_state (AutoFocus, LV_STATE_FOCUS_KEY);
+  }
+
+  //
+  // A pointer that has not moved since the screen was built must not replace
+  // that help when a row appears under it.
+  //
+  HoverHelpHold ();
+
   mNavScrollHold = FALSE;
   if (PcdGetBool (PcdLvglFormEntryTop)) {
     FocusIdx = FocusedNavIndex ();
@@ -5592,10 +5683,11 @@ LvglRenderForm (
       lv_obj_scroll_to_y (mContentPanel, 0, LV_ANIM_OFF);
     } else if (Entry == LvglFormEntryRebuild) {
       //
-      // Keep the scroll position (clamped at the bottom). Only a focus that
-      // moved to another row is scrolled into view.
+      // Keep the scroll position (clamped at the bottom; also stops a running
+      // scroll animation). Only a focus that moved to another row is
+      // scrolled into view.
       //
-      lv_obj_scroll_by_bounded (mContentPanel, 0, -PrevScrollY, LV_ANIM_OFF);
+      lv_obj_scroll_to_y (mContentPanel, PrevScrollY, LV_ANIM_OFF);
       if ((FocusIdx < mNavCount) && (FocusIdx != PrevFocusIdx)) {
         lv_obj_update_layout (mContentPanel);
         if (!NavRowFullyVisible (FocusIdx)) {
@@ -5620,6 +5712,12 @@ LvglRenderForm (
   if (CompletePendingLeaveIfReady ()) {
     lv_uefi_keypad_drain ();
     return EFI_SUCCESS;
+  }
+
+  if (mDrainEntryKeys) {
+    lv_uefi_keypad_drain ();
+    mDrainEntryKeys = FALSE;
+    DEBUG ((DEBUG_INFO, "LvglRenderer: drained entry keys\n"));
   }
 
   //
@@ -6043,7 +6141,8 @@ LvglRendererCleanup (
     mBannerTimer = NULL;
   }
 
-  mBannerCount = 0;
+  mBannerCount    = 0;
+  mDrainEntryKeys = TRUE;
 
   if (mFrameTimer != NULL) {
     gBS->CloseEvent (mFrameTimer);
