@@ -118,6 +118,14 @@ STATIC BOOLEAN                        mAbsLeftBtn    = FALSE;
 STATIC BOOLEAN                        mRelLeftBtn    = FALSE;
 
 //
+// A key that was held while Setup opened keeps auto-repeating into the first
+// event loop. keypad_read drops it until it has been quiet for mIgnoreQuietMs.
+//
+STATIC EFI_INPUT_KEY                  mIgnoreKey     = { 0, 0 };
+STATIC UINT32                         mIgnoreQuietMs = 0;
+STATIC UINT32                         mIgnoreTick    = 0;
+
+//
 // The mouse cursor image. Hidden until a pointer (mouse) is actually
 // present, so a machine with no mouse doesn't show a dead cursor stuck in the
 // middle of the screen.
@@ -424,6 +432,29 @@ keypad_read (
   }
 
   Status = TxtInEx->ReadKeyStrokeEx (TxtInEx, &KeyData);
+  if (!EFI_ERROR (Status) &&
+      ((mIgnoreKey.ScanCode != 0) || (mIgnoreKey.UnicodeChar != 0)) &&
+      (KeyData.Key.ScanCode == mIgnoreKey.ScanCode) &&
+      (KeyData.Key.UnicodeChar == mIgnoreKey.UnicodeChar))
+  {
+    if (lv_tick_elaps (mIgnoreTick) <= mIgnoreQuietMs) {
+      mIgnoreTick = lv_tick_get ();
+      DEBUG ((
+        DEBUG_INFO,
+        "LvglIndev: ignored entry key ScanCode=0x%x Char=0x%x tick=%u\n",
+        KeyData.Key.ScanCode,
+        KeyData.Key.UnicodeChar,
+        mIgnoreTick
+        ));
+      data->state = LV_INDEV_STATE_RELEASED;
+      return;
+    }
+
+    DEBUG ((DEBUG_INFO, "LvglIndev: entry key released after %u ms\n", lv_tick_elaps (mIgnoreTick)));
+    mIgnoreKey.ScanCode    = 0;
+    mIgnoreKey.UnicodeChar = 0;
+  }
+
   if (!EFI_ERROR (Status)) {
     switch (KeyData.Key.UnicodeChar) {
     case CHAR_CARRIAGE_RETURN:
@@ -643,12 +674,16 @@ void lv_port_indev_init (lv_display_t *disp)
   }
 }
 
-void lv_uefi_keypad_drain (void)
+EFI_INPUT_KEY lv_uefi_keypad_drain (void)
 {
   EFI_STATUS                         Status;
   EFI_SIMPLE_TEXT_INPUT_EX_PROTOCOL  *TxtInEx;
   EFI_KEY_DATA                       KeyData;
+  EFI_INPUT_KEY                      LastKey;
   lv_indev_t                        *Indev;
+
+  LastKey.ScanCode    = 0;
+  LastKey.UnicodeChar = 0;
 
   //
   // Drain all pending keystrokes from the EFI console so none leak into the
@@ -660,6 +695,7 @@ void lv_uefi_keypad_drain (void)
                   (VOID **)&TxtInEx);
   if (!EFI_ERROR (Status)) {
     while (!EFI_ERROR (TxtInEx->ReadKeyStrokeEx (TxtInEx, &KeyData))) {
+      LastKey = KeyData.Key;
     }
   }
 
@@ -674,6 +710,19 @@ void lv_uefi_keypad_drain (void)
       Indev->keypad.last_key   = 0;
     }
   }
+
+  return LastKey;
+}
+
+//
+// Drop Key in keypad_read until it has been quiet for more than QuietMs; the
+// first read after that is passed through. A zero Key cancels.
+//
+void lv_uefi_keypad_ignore_key (EFI_INPUT_KEY Key, UINT32 QuietMs)
+{
+  mIgnoreKey     = Key;
+  mIgnoreQuietMs = QuietMs;
+  mIgnoreTick    = lv_tick_get ();
 }
 
 //

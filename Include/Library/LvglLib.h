@@ -67,10 +67,22 @@ UefiLvglAppRegister (
 /**
   Drain the EFI keyboard buffer and reset the LVGL keypad indev state so that
   no pending key-press leaks into the next event loop.
+
+  @return  The last key drained; ScanCode and UnicodeChar are 0 if none.
 **/
-void
+EFI_INPUT_KEY
 lv_uefi_keypad_drain (
   void
+  );
+
+/**
+  Drop Key in the keypad read until it has been quiet for more than QuietMs;
+  the first read after that is passed through. A zero Key cancels.
+**/
+void
+lv_uefi_keypad_ignore_key (
+  EFI_INPUT_KEY  Key,
+  UINT32         QuietMs
   );
 
 /**

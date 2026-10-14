@@ -5715,9 +5715,12 @@ LvglRenderForm (
   }
 
   if (mDrainEntryKeys) {
-    lv_uefi_keypad_drain ();
+    EFI_INPUT_KEY  EntryKey;
+
+    EntryKey        = lv_uefi_keypad_drain ();
     mDrainEntryKeys = FALSE;
-    DEBUG ((DEBUG_INFO, "LvglRenderer: drained entry keys\n"));
+    DEBUG ((DEBUG_INFO, "LvglRenderer: drained entry keys, last ScanCode=0x%x Char=0x%x\n", EntryKey.ScanCode, EntryKey.UnicodeChar));
+    lv_uefi_keypad_ignore_key (EntryKey, 1000);
   }
 
   //
@@ -6134,6 +6137,8 @@ LvglRendererCleanup (
   VOID
   )
 {
+  EFI_INPUT_KEY  NoKey;
+
   LvglChromeTeardown ();
 
   if (mBannerTimer != NULL) {
@@ -6143,6 +6148,9 @@ LvglRendererCleanup (
 
   mBannerCount    = 0;
   mDrainEntryKeys = TRUE;
+  NoKey.ScanCode    = 0;
+  NoKey.UnicodeChar = 0;
+  lv_uefi_keypad_ignore_key (NoKey, 0);
 
   if (mFrameTimer != NULL) {
     gBS->CloseEvent (mFrameTimer);

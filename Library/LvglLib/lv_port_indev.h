@@ -65,7 +65,13 @@ void lv_port_indev_close();
   Drain the EFI keyboard buffer and reset the LVGL keypad indev state so that
   no pending key-press leaks into the next event loop.
 **/
-void lv_uefi_keypad_drain(void);
+EFI_INPUT_KEY lv_uefi_keypad_drain(void);
+
+/**
+  Drop Key in keypad_read until it has been quiet for more than QuietMs.
+  A zero Key cancels.
+**/
+void lv_uefi_keypad_ignore_key(EFI_INPUT_KEY Key, UINT32 QuietMs);
 
 /**
   Report whether a usable pointer (mouse) is currently present. TRUE only after
