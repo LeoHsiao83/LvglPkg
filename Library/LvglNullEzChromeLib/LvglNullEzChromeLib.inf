@@ -1,0 +1,22 @@
+## @file
+#  Default LvglEzChromeLib instance: no EZ page.
+#
+#  Copyright (c) 2026, LeoHsiao83. All rights reserved.<BR>
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+#
+##
+
+[Defines]
+  INF_VERSION     = 0x0001001B
+  BASE_NAME       = LvglNullEzChromeLib
+  FILE_GUID       = 6A9AAB6B-335C-4B87-97CD-A83E9AC4F2C3
+  MODULE_TYPE     = BASE
+  VERSION_STRING  = 1.0
+  LIBRARY_CLASS   = LvglEzChromeLib
+
+[Sources]
+  LvglNullEzChromeLib.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  LvglPkg/LvglPkg.dec

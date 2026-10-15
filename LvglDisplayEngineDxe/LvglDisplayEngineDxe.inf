@@ -52,6 +52,7 @@
   LvglUiConfigLib
   LvglThemeLib
   LvglChromeLib
+  LvglEzChromeLib
   LvglLib
 
 [Guids]
@@ -75,6 +76,8 @@
   gLvglPkgTokenSpaceGuid.PcdLvglScrollBeforeFocus
   gLvglPkgTokenSpaceGuid.PcdLvglFormEntryTop
   gLvglPkgTokenSpaceGuid.PcdLvglNavUpWrap
+  gLvglPkgTokenSpaceGuid.PcdLvglEzChromeEnable
+  gLvglPkgTokenSpaceGuid.PcdLvglEzModeScanCode
 
 [BuildOptions]
   # Same LVGL header warnings as LvglLib.inf.

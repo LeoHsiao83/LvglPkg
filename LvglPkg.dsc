@@ -102,6 +102,7 @@
   LvglThemeLib|LvglPkg/Library/LvglThemeLib/LvglThemeLib.inf
   LvglUiConfigLib|LvglPkg/Library/LvglUiConfigLib/LvglUiConfigLib.inf
   LvglChromeLib|LvglPkg/Library/LvglAptioChromeLib/LvglAptioChromeLib.inf
+  LvglEzChromeLib|LvglPkg/Library/LvglNullEzChromeLib/LvglNullEzChromeLib.inf
 
 [LibraryClasses.common.DXE_RUNTIME_DRIVER, LibraryClasses.common.UEFI_DRIVER, LibraryClasses.common.DXE_DRIVER, LibraryClasses.common.UEFI_APPLICATION]
   HobLib|MdePkg/Library/DxeHobLib/DxeHobLib.inf

@@ -65,6 +65,7 @@ LvglPkg/
 +--- Library/LvglThemeLib/      Runtime UI-scale font/metric helpers
 +--- Library/LvglUiConfigLib/   NVRAM/PCD UI configuration helpers
 +--- Library/LvglAptioChromeLib/ Default Aptio-style Setup chrome (LvglChromeLib)
++--- Library/LvglNullEzChromeLib/ Default empty EZ page (LvglEzChromeLib)
 +--- LvglDisplayEngineDxe/      Display engine DXE driver (the main deliverable)
 |   +--- LvglDisplayEngineDxe.c Text engine hot-patch, entry/unload
 |   +--- LvglFormRenderer.c     FormDisplay() -> LVGL widget builder + event loop
@@ -141,7 +142,10 @@ class for its runtime UI-scale font/metric helpers. Map it in
 ```
 LvglThemeLib|LvglPkg/Library/LvglThemeLib/LvglThemeLib.inf
 LvglChromeLib|LvglPkg/Library/LvglAptioChromeLib/LvglAptioChromeLib.inf
+LvglEzChromeLib|LvglPkg/Library/LvglNullEzChromeLib/LvglNullEzChromeLib.inf
 ```
+`LvglEzChromeLeaveRequested ()` returns TRUE once after the EZ page wrote `BootNext`; the engine then calls `ResetSystem (EfiResetCold)` without submitting.
+`LvglEzChromeResetFailed ()` is called if `ResetSystem` returns; the EZ page shows the failure (`BootNext` stays).
 
 ### 2. FDF -- add the display engine to the firmware image
 
@@ -244,6 +248,8 @@ Declared in `LvglPkg.dec`:
 | `PcdLvglScrollBeforeFocus` | When TRUE, UP/DOWN scroll one page first, keeping focus, when the next row is more than a page away or a wrap would skip hidden content; `FALSE` (default) moves focus at once |
 | `PcdLvglFormEntryTop` | When TRUE, a form entered for the first time (Setup entry, tab switch, REF) opens at the top with the focus on the browser's row, a rebuild of the same form keeps its scroll position, and UP/DOWN toward an off-screen focus scroll toward it first; `FALSE` (default) scrolls the focus row into view |
 | `PcdLvglNavUpWrap` | `TRUE` (default) wraps UP on the first row to the last row; `FALSE` scrolls up to hidden content first, then stays on the first row |
+| `PcdLvglEzSetupAppFile` | FV file GUID of the firmware's own Setup application; the EZ boot list skips that load option. All zero (default) = no GUID filtering |
+| `PcdLvglEzChromeEnable` / `PcdLvglEzModeScanCode` | `TRUE` lets the front page show a platform EZ page from `LvglEzChromeLib`, and the scan code (e.g. `0x0011` = F7) switches between the EZ page and the Advanced pages; defaults `FALSE` / `0` (off, `LvglEzChromeLib` is never called) |
 
 Example:
 

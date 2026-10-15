@@ -16,6 +16,7 @@
   LvglLib|Include/Library/LvglLib.h
   LvglThemeLib|Include/Library/LvglThemeLib.h
   LvglChromeLib|Include/Library/LvglChromeLib.h
+  LvglEzChromeLib|Include/Library/LvglEzChromeLib.h
 
 [Guids]
   ## LVGL UI configuration formset / variable GUID
@@ -93,3 +94,16 @@
   ## When TRUE, UP on the first row wraps to the last row. FALSE scrolls up to
   ## any hidden content first and then stays on the first row.
   gLvglPkgTokenSpaceGuid.PcdLvglNavUpWrap|TRUE|BOOLEAN|0x00000012
+
+  ## When TRUE, the front page asks LvglEzChromeLib whether an EZ page exists.
+  #  FALSE never calls LvglEzChromeLib.
+  gLvglPkgTokenSpaceGuid.PcdLvglEzChromeEnable|FALSE|BOOLEAN|0x00000013
+
+  ## EFI scan code that switches between the EZ page and the Advanced pages.
+  #  0 = off.
+  gLvglPkgTokenSpaceGuid.PcdLvglEzModeScanCode|0x0000|UINT16|0x00000014
+
+  ## FV file GUID of this firmware's own Setup application. The EZ boot list
+  #  skips a load option whose device path names this file. All zero = no
+  #  GUID filtering (only LOAD_OPTION_HIDDEN entries are skipped).
+  gLvglPkgTokenSpaceGuid.PcdLvglEzSetupAppFile|{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 }|VOID*|0x00000015

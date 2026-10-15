@@ -13,11 +13,13 @@
 
 #include "LvglFormRenderer.h"
 #include <Library/LvglChromeLib.h>
+#include <Library/LvglEzChromeLib.h>
 #include "LvglTextPopup.h"
 #include <LvglTheme.h>
 #include <Library/LvglUiConfigLib.h>
 #include <Library/PrintLib.h>
 #include <Library/UefiLib.h>
+#include <Library/UefiRuntimeServicesTableLib.h>
 #include <Guid/MdeModuleHii.h>
 
 STATIC LVGL_FORM_SESSION  mSession;
@@ -239,6 +241,44 @@ STATIC EFI_GUID           mTabRootFormSetGuid;
 STATIC UINT16             mTabRootFormId        = 0;
 STATIC BOOLEAN            mNextFormIsTabRoot    = FALSE;
 STATIC BOOLEAN            mTabsEverSelected     = FALSE;
+
+//
+// Number of LvglEzChromeLib calls made by the engine. Stays 0 while
+// PcdLvglEzChromeEnable is FALSE.
+//
+STATIC UINT32  mEzChromeCalls = 0;
+
+//
+// EZ page state (PcdLvglEzChromeEnable TRUE and LvglEzChromePresent() TRUE).
+// mEzPresent: LvglEzChromePresent() on the last front page FormDisplay.
+// mEzAvailable: this FormDisplay may show the EZ page.
+// mEzShowing: the EZ page is the current front page view (memory only; F7
+// never writes NVRAM). mEzDecided: the initial view was taken from
+// LvglEzChromePreferEz() on the first front page FormDisplay of this Setup
+// entry (cleared in LvglRendererCleanup when Setup is left).
+// mEzSwitchPending: F7 was pressed; the event loop switches the view.
+// mEzKeySink: invisible focus target so the keypad sends keys on the EZ page.
+//
+STATIC BOOLEAN    mEzPresent        = FALSE;
+STATIC BOOLEAN    mEzAvailable      = FALSE;
+STATIC BOOLEAN    mEzShowing        = FALSE;
+STATIC BOOLEAN    mEzDecided        = FALSE;
+STATIC BOOLEAN    mEzLogged         = FALSE;
+STATIC BOOLEAN    mEzSwitchPending  = FALSE;
+STATIC lv_obj_t   *mEzKeySink       = NULL;
+//
+// mEzLeaving: Exit Setup Yes on the EZ page. Every non-front FormDisplay
+// returns FORM_EXIT without drawing until the front page discards and
+// selects Continue.
+//
+STATIC BOOLEAN    mEzLeaving        = FALSE;
+//
+// mEzExitAsk: Esc on the EZ page; the event loop opens the Exit Setup
+// dialog after the key event has finished (the same Esc must not reach the
+// new dialog).
+//
+STATIC BOOLEAN    mEzExitAsk        = FALSE;
+STATIC BOOLEAN    mFallbackInstalled = FALSE;
 
 //
 // Forward declarations for widget builders.
@@ -2217,6 +2257,23 @@ IsScreenshotKey (
 }
 
 /**
+  TRUE when @a LvKey is the key set by PcdLvglEzModeScanCode (0 = none).
+**/
+STATIC
+BOOLEAN
+IsEzModeKey (
+  IN UINT32  LvKey
+  )
+{
+  UINT16  ScanCode;
+
+  ScanCode = PcdGet16 (PcdLvglEzModeScanCode);
+  return (BOOLEAN)((ScanCode != 0) &&
+                   (LvKey >= LV_KEY_F1) && (LvKey <= LV_KEY_F12) &&
+                   ((UINT16)(SCAN_F1 + (LvKey - LV_KEY_F1)) == ScanCode));
+}
+
+/**
   TRUE when the current form has @a ScanCode in its hot key list.
 **/
 STATIC
@@ -2313,6 +2370,47 @@ TakeScreenshot (
 }
 
 /**
+  EZ page Esc: the Exit Setup dialog used at the Advanced tab top level.
+**/
+STATIC
+VOID
+ShowEzExitDialog (
+  VOID
+  )
+{
+  if (mPopupOverlay != NULL) {
+    return;
+  }
+
+  DEBUG ((DEBUG_INFO, "LvglRenderer: EZ Esc -> Exit Setup dialog\n"));
+  ShowPopup (
+    mSession.Group,
+    "Exit Setup",
+    "Discard changes and exit Setup?",
+    "Yes",
+    BROWSER_ACTION_FORM_EXIT,
+    FALSE,
+    LvglPopupPurposeExitSetup
+    );
+}
+
+/**
+  LV_EVENT_KEY on the EZ page key target. LVGL sends Esc to the focused
+  object (not to the indev callback).
+**/
+STATIC
+VOID
+OnEzSinkKey (
+  lv_event_t  *Event
+  )
+{
+  if (lv_indev_get_key (lv_indev_active ()) == LV_KEY_ESC) {
+    mEzExitAsk = TRUE;
+    lv_event_stop_processing (Event);
+  }
+}
+
+/**
   Indev-level key handler -- UP/DOWN/Tab navigation (including grayed rows)
   and ESC when nothing enabled is focused.
 **/
@@ -2350,6 +2448,31 @@ OnIndevFallbackKey (
   // Popup is open -- OnPopupKey handles all keys for popup buttons.
   //
   if (mPopupOverlay != NULL) {
+    return;
+  }
+
+  //
+  // EZ mode key: only on a front page that may show the EZ page. The switch
+  // runs in the event loop, still inside this FormDisplay (no FORM_EXIT).
+  //
+  if (mEzAvailable && IsEzModeKey (Key)) {
+    if ((mSession.Group == NULL) || !lv_group_get_editing (mSession.Group)) {
+      mEzSwitchPending = TRUE;
+      DEBUG ((DEBUG_INFO, "LvglRenderer: EZ mode key -> %a\n", mEzShowing ? "Advanced" : "EZ"));
+    }
+
+    return;
+  }
+
+  //
+  // EZ page: Esc opens the Exit Setup dialog used at the Advanced tab top
+  // level. Other keys do nothing on the EZ page.
+  //
+  if (mEzShowing) {
+    if (Key == LV_KEY_ESC) {
+      mEzExitAsk = TRUE;
+    }
+
     return;
   }
 
@@ -3332,6 +3455,14 @@ OnNavKey (
   // Defer all key handling to OnPopupKey when a popup is visible.
   //
   if (mPopupOverlay != NULL) {
+    return;
+  }
+
+  //
+  // OnIndevFallbackKey owns the EZ mode key on an EZ-capable front page.
+  //
+  if (mEzAvailable && IsEzModeKey (Key)) {
+    lv_event_stop_processing (Event);
     return;
   }
 
@@ -5404,6 +5535,139 @@ LvglRunFrame (
   }
 }
 
+/**
+  Bind every keypad input device to @a Group, installing the fallback key
+  handler once.
+**/
+STATIC
+VOID
+BindKeypadGroup (
+  IN lv_group_t  *Group
+  )
+{
+  lv_indev_t  *Indev;
+
+  Indev = NULL;
+  for (;;) {
+    Indev = lv_indev_get_next (Indev);
+    if (Indev == NULL) {
+      break;
+    }
+
+    if (lv_indev_get_type (Indev) == LV_INDEV_TYPE_KEYPAD) {
+      lv_indev_set_group (Indev, Group);
+      //
+      // LvglRenderForm is called once per form transition. Only install the
+      // indev fallback key handler the first time, otherwise stale callbacks
+      // accumulate for the lifetime of LVGL.
+      //
+      if (!mFallbackInstalled) {
+        lv_indev_add_event_cb (Indev, OnIndevFallbackKey, LV_EVENT_KEY, NULL);
+        mFallbackInstalled = TRUE;
+      }
+    }
+  }
+}
+
+/**
+  Remove the EZ page before the Advanced page is built.
+**/
+STATIC
+VOID
+HideEzPage (
+  VOID
+  )
+{
+  LvglEzChromeTeardown ();
+  if (mEzKeySink != NULL) {
+    lv_obj_delete (mEzKeySink);
+    mEzKeySink = NULL;
+  }
+
+  mEzShowing = FALSE;
+  DEBUG ((DEBUG_INFO, "LvglRenderer: EZ page removed\n"));
+}
+
+/**
+  Show the EZ page for this front page FormDisplay. The previous screen
+  (Advanced chrome and rows, or an earlier form) is deleted once the EZ
+  page is loaded. Browser state (FormData, edited values) is not touched.
+**/
+STATIC
+VOID
+ShowEzPage (
+  IN  FORM_DISPLAY_ENGINE_FORM  *FormData,
+  OUT USER_INPUT                *UserInputData
+  )
+{
+  lv_obj_t    *PrevScreen;
+  lv_group_t  *PrevGroup;
+
+  if (mEzKeySink != NULL) {
+    HideEzPage ();
+  }
+
+  LvglChromeTeardown ();
+
+  PrevScreen = mSession.Screen;
+  PrevGroup  = mSession.Group;
+  ZeroMem (&mSession, sizeof (mSession));
+  mSession.FormData      = FormData;
+  mSession.UserInput     = UserInputData;
+  mSession.ExitRequested = FALSE;
+  mNavCount              = 0;
+  mEditRegistryCount     = 0;
+  mEditingDropdown       = NULL;
+  mContentPanel          = NULL;
+  if (mBannerTimer != NULL) {
+    lv_timer_delete (mBannerTimer);
+    mBannerTimer = NULL;
+  }
+
+  mBannerCount = 0;
+  ZeroMem (UserInputData, sizeof (USER_INPUT));
+
+  //
+  // The EZ page's group is the LVGL default group while it is built, so the
+  // page can add its own focusable objects (lv_group_get_default ()). The
+  // first object added keeps the focus.
+  //
+  mSession.Group = lv_group_create ();
+  lv_group_set_default (mSession.Group);
+  LvglEzChromeBuild ();
+  lv_group_set_default (NULL);
+
+  //
+  // The keypad only sends keys while its group has a focused object.
+  //
+  mEzKeySink = lv_obj_create (lv_layer_top ());
+  lv_obj_remove_style_all (mEzKeySink);
+  lv_obj_set_size (mEzKeySink, 0, 0);
+  lv_obj_remove_flag (mEzKeySink, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb (mEzKeySink, OnEzSinkKey, LV_EVENT_KEY, NULL);
+  lv_group_add_obj (mSession.Group, mEzKeySink);
+  //
+  // When the page added its own focusable objects, hide the sink so the
+  // Tab cycle skips it (LVGL does not focus hidden objects).
+  //
+  if (lv_group_get_focused (mSession.Group) != mEzKeySink) {
+    lv_obj_add_flag (mEzKeySink, LV_OBJ_FLAG_HIDDEN);
+  }
+
+  BindKeypadGroup (mSession.Group);
+
+  if (PrevGroup != NULL) {
+    lv_group_delete (PrevGroup);
+  }
+
+  if (PrevScreen != NULL) {
+    lv_obj_delete (PrevScreen);
+  }
+
+  mEzShowing = TRUE;
+  DEBUG ((DEBUG_INFO, "LvglRenderer: EZ page shown\n"));
+}
+
 EFI_STATUS
 EFIAPI
 LvglRenderForm (
@@ -5420,9 +5684,14 @@ LvglRenderForm (
   UINTN            PrevFocusIdx;
   UINTN            FocusIdx;
   lv_obj_t         *AutoFocus;
+  BOOLEAN          EzBeforeTabs;
 
   ASSERT (FormData != NULL);
   ASSERT (UserInputData != NULL);
+
+  Entry        = LvglFormEntryRestore;
+  PrevScrollY  = 0;
+  PrevFocusIdx = MAX_UINTN;
 
   //
   // Initialize LVGL if not yet done (constructor in LvglLib handles this,
@@ -5453,12 +5722,78 @@ LvglRenderForm (
     );
 
   //
+  // Exit Setup Yes on the EZ page: leave every form without drawing it; the
+  // front page then discards and selects Continue (tab mode front action).
+  //
+  if (mEzLeaving) {
+    if (!IsFrontPageFormData (FormData)) {
+      ZeroMem (UserInputData, sizeof (USER_INPUT));
+      UserInputData->Action = BROWSER_ACTION_FORM_EXIT;
+      DEBUG ((DEBUG_INFO, "LvglRenderer: EZ exit, FORM_EXIT without drawing FormId=0x%x\n", FormData->FormId));
+      return EFI_SUCCESS;
+    }
+
+    mEzLeaving          = FALSE;
+    mPendingFrontAction = LvglFrontActionDiscardThenContinue;
+    DEBUG ((DEBUG_INFO, "LvglRenderer: EZ exit reached front page\n"));
+  }
+
+  //
+  // EZ chrome: consulted only on the front page and only when
+  // PcdLvglEzChromeEnable is TRUE.
+  //
+  mEzAvailable      = FALSE;
+  mEzSwitchPending  = FALSE;
+  EzBeforeTabs      = FALSE;
+  if (IsFrontPageFormData (FormData)) {
+    mEzPresent = FALSE;
+    if (PcdGetBool (PcdLvglEzChromeEnable)) {
+      mEzChromeCalls++;
+      mEzPresent = LvglEzChromePresent ();
+      if (mEzPresent && !mEzDecided) {
+        mEzChromeCalls++;
+        mEzShowing = LvglEzChromePreferEz ();
+        mEzDecided = TRUE;
+      }
+    }
+
+    if (!mEzLogged) {
+      DEBUG ((DEBUG_INFO, "LvglRenderer: EZ chrome enable=%d calls=%u\n", PcdGetBool (PcdLvglEzChromeEnable), mEzChromeCalls));
+      mEzLogged = TRUE;
+    }
+  }
+
+  //
+  // EZ page as the first Setup view: shown by this front page FormDisplay
+  // before the tabs pick a page. F7 then continues below in this
+  // FormDisplay.
+  //
+  if (IsFrontPageFormData (FormData) && mEzPresent && mEzShowing &&
+      (mPendingFrontAction == LvglFrontActionNone))
+  {
+    mEzAvailable = TRUE;
+    EzBeforeTabs = TRUE;
+    ShowEzPage (FormData, UserInputData);
+    goto RunEvents;
+  }
+
+TabsStep:
+  //
   // Tab mode: may return without building (Enter/Leave still paired via
   // LvglFormDisplay). Must run before Teardown/ZeroMem so the previous
   // screen pointer in mSession is preserved.
   //
   if (HandleTabsBeforeBuild (FormData, UserInputData)) {
     return EFI_SUCCESS;
+  }
+
+  //
+  // Every Advanced page may switch to the EZ page and back in place; the
+  // form and its edited values stay in the browser.
+  //
+  mEzAvailable = mEzPresent;
+  if (!mEzAvailable && mEzShowing) {
+    HideEzPage ();
   }
 
   //
@@ -5474,6 +5809,12 @@ LvglRenderForm (
       PrevScrollY  = lv_obj_get_scroll_y (mContentPanel);
       PrevFocusIdx = FocusedNavIndex ();
     }
+  }
+
+BuildView:
+  if (mEzShowing) {
+    ShowEzPage (FormData, UserInputData);
+    goto RunEvents;
   }
 
   //
@@ -5532,30 +5873,7 @@ LvglRenderForm (
   // Create a navigation group and bind keyboard input devices.
   //
   mSession.Group = lv_group_create ();
-  {
-    lv_indev_t  *Indev = NULL;
-
-    for (;;) {
-      Indev = lv_indev_get_next (Indev);
-      if (Indev == NULL) {
-        break;
-      }
-
-      if (lv_indev_get_type (Indev) == LV_INDEV_TYPE_KEYPAD) {
-        STATIC BOOLEAN  mFallbackInstalled = FALSE;
-        lv_indev_set_group (Indev, mSession.Group);
-        //
-        // LvglRenderForm is called once per form transition. Only install the
-        // indev fallback key handler the first time, otherwise stale callbacks
-        // accumulate for the lifetime of LVGL.
-        //
-        if (!mFallbackInstalled) {
-          lv_indev_add_event_cb (Indev, OnIndevFallbackKey, LV_EVENT_KEY, NULL);
-          mFallbackInstalled = TRUE;
-        }
-      }
-    }
-  }
+  BindKeypadGroup (mSession.Group);
 
   //
   // Temporarily swap mSession.Screen to use ContentPanel for widget creation,
@@ -5714,6 +6032,7 @@ LvglRenderForm (
     return EFI_SUCCESS;
   }
 
+RunEvents:
   if (mDrainEntryKeys) {
     EFI_INPUT_KEY  EntryKey;
 
@@ -5728,8 +6047,27 @@ LvglRenderForm (
   //
   DEBUG ((DEBUG_INFO, "LvglRenderer: entering event loop for FormId=0x%x\n", FormData->FormId));
 
-  while (!mSession.ExitRequested) {
+  mEzExitAsk = FALSE;
+  while (!mSession.ExitRequested && !mEzSwitchPending) {
     LvglRunFrame ();
+
+    if (mEzExitAsk) {
+      mEzExitAsk = FALSE;
+      if (mEzShowing) {
+        ShowEzExitDialog ();
+      }
+    }
+
+    //
+    // The EZ page wrote BootNext (boot now): cold reset at once. Nothing is
+    // submitted, so unsaved changes are dropped; BDS boots BootNext.
+    //
+    if (mEzShowing && (mPopupOverlay == NULL) && LvglEzChromeLeaveRequested ()) {
+      DEBUG ((DEBUG_INFO, "LvglRenderer: EZ boot now -> ResetSystem (EfiResetCold), nothing submitted\n"));
+      gRT->ResetSystem (EfiResetCold, EFI_SUCCESS, 0, NULL);
+      DEBUG ((DEBUG_ERROR, "LvglRenderer: ResetSystem returned\n"));
+      LvglEzChromeResetFailed ();
+    }
 
     //
     // Process popup result once the overlay has been dismissed.
@@ -5746,6 +6084,16 @@ LvglRenderForm (
             mSession.UserInput->Action = BROWSER_ACTION_DISCARD;
             mSession.ExitRequested     = TRUE;
             DEBUG ((DEBUG_INFO, "LvglRenderer: ExitSetup Yes on front -> DISCARD then Continue\n"));
+          } else if (mEzShowing) {
+            //
+            // EZ page over a form: discard here, then leave every form
+            // without drawing it (mEzLeaving).
+            //
+            mEzLeaving = TRUE;
+            ZeroMem (mSession.UserInput, sizeof (USER_INPUT));
+            mSession.UserInput->Action = BROWSER_ACTION_DISCARD;
+            mSession.ExitRequested     = TRUE;
+            DEBUG ((DEBUG_INFO, "LvglRenderer: ExitSetup Yes on EZ -> DISCARD then leave Setup\n"));
           } else {
             mPendingFrontAction = LvglFrontActionDiscardThenContinue;
             RequestUserExit (BROWSER_ACTION_FORM_EXIT, 0, NULL);
@@ -5774,6 +6122,25 @@ LvglRenderForm (
 
       mPopupResult = LVGL_POPUP_PENDING;
     }
+  }
+
+  //
+  // EZ mode key: switch the view and stay in this FormDisplay. Edited
+  // values stay in the browser; nothing is submitted.
+  //
+  if (mEzSwitchPending && !mSession.ExitRequested) {
+    mEzSwitchPending = FALSE;
+    if (mEzShowing) {
+      HideEzPage ();
+      if (EzBeforeTabs) {
+        EzBeforeTabs = FALSE;
+        goto TabsStep;
+      }
+    } else {
+      mEzShowing = TRUE;
+    }
+
+    goto BuildView;
   }
 
   //
@@ -6140,6 +6507,17 @@ LvglRendererCleanup (
   EFI_INPUT_KEY  NoKey;
 
   LvglChromeTeardown ();
+
+  //
+  // Leaving Setup: remove the EZ page and decide the first view again on
+  // the next Setup entry.
+  //
+  if (mEzShowing || (mEzKeySink != NULL)) {
+    HideEzPage ();
+  }
+
+  mEzDecided = FALSE;
+  mEzLeaving = FALSE;
 
   if (mBannerTimer != NULL) {
     lv_timer_delete (mBannerTimer);
