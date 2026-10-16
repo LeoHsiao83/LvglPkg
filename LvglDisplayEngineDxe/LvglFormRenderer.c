@@ -5746,6 +5746,15 @@ LvglRenderForm (
   mEzAvailable      = FALSE;
   mEzSwitchPending  = FALSE;
   EzBeforeTabs      = FALSE;
+
+  //
+  // A tab switch is pending (its tab may have run its own SendForm and
+  // ExitDisplay): enter that tab first, before PreferEz or the EZ page.
+  //
+  if (IsFrontPageFormData (FormData) && (mPendingTab != MAX_UINTN)) {
+    goto TabsStep;
+  }
+
   if (IsFrontPageFormData (FormData)) {
     mEzPresent = FALSE;
     if (PcdGetBool (PcdLvglEzChromeEnable)) {
@@ -6511,16 +6520,17 @@ LvglRendererCleanup (
 
   //
   // Leaving Setup: remove the EZ page and decide the first view again on
-  // the next Setup entry. A pending tab switch is not leaving Setup: a tab
-  // that runs its own SendForm (a platform Boot Manager) ends with
-  // ExitDisplay before the front page picks the next tab, so keep the
-  // decided view and let the pending tab be entered.
+  // the next Setup entry. A pending tab switch, or a tab just entered whose
+  // root form has not been shown yet (mNextFormIsTabRoot), is not leaving
+  // Setup: a tab that runs its own SendForm (a platform Boot Manager) ends
+  // with ExitDisplay, so keep the decided view.
   //
   if (mEzShowing || (mEzKeySink != NULL)) {
     HideEzPage ();
   }
 
-  if (mPendingTab == MAX_UINTN) {
+  DEBUG ((DEBUG_INFO, "LvglRenderer: cleanup pending=%u tabroot=%u decided=%u\n", (UINT32)mPendingTab, (UINT32)mNextFormIsTabRoot, (UINT32)mEzDecided));
+  if ((mPendingTab == MAX_UINTN) && !mNextFormIsTabRoot) {
     mEzDecided = FALSE;
   }
   mEzLeaving = FALSE;
