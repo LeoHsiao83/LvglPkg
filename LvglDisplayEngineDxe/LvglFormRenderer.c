@@ -255,7 +255,8 @@ STATIC UINT32  mEzChromeCalls = 0;
 // mEzShowing: the EZ page is the current front page view (memory only; F7
 // never writes NVRAM). mEzDecided: the initial view was taken from
 // LvglEzChromePreferEz() on the first front page FormDisplay of this Setup
-// entry (cleared in LvglRendererCleanup when Setup is left).
+// entry (cleared in LvglRendererCleanup when Setup is left, kept across the
+// ExitDisplay of a pending tab switch).
 // mEzSwitchPending: F7 was pressed; the event loop switches the view.
 // mEzKeySink: invisible focus target so the keypad sends keys on the EZ page.
 //
@@ -6510,13 +6511,18 @@ LvglRendererCleanup (
 
   //
   // Leaving Setup: remove the EZ page and decide the first view again on
-  // the next Setup entry.
+  // the next Setup entry. A pending tab switch is not leaving Setup: a tab
+  // that runs its own SendForm (a platform Boot Manager) ends with
+  // ExitDisplay before the front page picks the next tab, so keep the
+  // decided view and let the pending tab be entered.
   //
   if (mEzShowing || (mEzKeySink != NULL)) {
     HideEzPage ();
   }
 
-  mEzDecided = FALSE;
+  if (mPendingTab == MAX_UINTN) {
+    mEzDecided = FALSE;
+  }
   mEzLeaving = FALSE;
 
   if (mBannerTimer != NULL) {
