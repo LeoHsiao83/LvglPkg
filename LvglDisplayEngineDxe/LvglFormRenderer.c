@@ -2435,6 +2435,48 @@ OnEzSinkKey (
 }
 
 /**
+  TRUE when LvKey (F1..F12) is a form hot key whose Action includes SUBMIT
+  but not DEFAULT. Lookup only (same match as HandleFunctionKey); no popup,
+  no state change.
+**/
+STATIC
+BOOLEAN
+IsSubmitExitHotKey (
+  IN UINT32  LvKey
+  )
+{
+  UINT16           ScanCode;
+  LIST_ENTRY       *Link;
+  BROWSER_HOT_KEY  *HotKey;
+
+  if ((LvKey < LV_KEY_F1) || (LvKey > LV_KEY_F12)) {
+    return FALSE;
+  }
+
+  if ((mSession.FormData == NULL) || IsListEmpty (&mSession.FormData->HotKeyListHead)) {
+    return FALSE;
+  }
+
+  ScanCode = (UINT16)(SCAN_F1 + (LvKey - LV_KEY_F1));
+
+  for (Link = mSession.FormData->HotKeyListHead.ForwardLink;
+       Link != &mSession.FormData->HotKeyListHead;
+       Link = Link->ForwardLink)
+  {
+    HotKey = BROWSER_HOT_KEY_FROM_LINK (Link);
+    if ((HotKey->KeyData != NULL) &&
+        (HotKey->KeyData->ScanCode == ScanCode) &&
+        (HotKey->KeyData->UnicodeChar == CHAR_NULL))
+    {
+      return (BOOLEAN)(((HotKey->Action & BROWSER_ACTION_SUBMIT) != 0) &&
+                       ((HotKey->Action & BROWSER_ACTION_DEFAULT) == 0));
+    }
+  }
+
+  return FALSE;
+}
+
+/**
   Indev-level key handler -- UP/DOWN/Tab navigation (including grayed rows)
   and ESC when nothing enabled is focused.
 **/
@@ -2495,6 +2537,14 @@ OnIndevFallbackKey (
   if (mEzShowing) {
     if (Key == LV_KEY_ESC) {
       mEzExitAsk = TRUE;
+    }
+
+    //
+    // PcdLvglSubmitHotKeyExits: the form's SUBMIT hot key (save and leave
+    // Setup) also works on the EZ page, with the same confirm popup.
+    //
+    if (PcdGetBool (PcdLvglSubmitHotKeyExits) && IsSubmitExitHotKey (Key)) {
+      (VOID)HandleFunctionKey (Key);
     }
 
     return;
