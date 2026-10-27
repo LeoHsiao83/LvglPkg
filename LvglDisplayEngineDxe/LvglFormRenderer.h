@@ -133,6 +133,16 @@ LvglScreenshotSave (
   );
 
 /**
+  Drop a pending SUBMIT hot key exit (PcdLvglSubmitHotKeyExits): the browser
+  reported an error, so Setup is not left.
+**/
+VOID
+EFIAPI
+LvglRendererCancelSubmitExit (
+  VOID
+  );
+
+/**
   Tear down LVGL objects created by the renderer.
 **/
 VOID

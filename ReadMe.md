@@ -248,6 +248,7 @@ Declared in `LvglPkg.dec`:
 | `PcdLvglScrollBeforeFocus` | When TRUE, UP/DOWN scroll one page first, keeping focus, when the next row is more than a page away or a wrap would skip hidden content; `FALSE` (default) moves focus at once |
 | `PcdLvglFormEntryTop` | When TRUE, a form entered for the first time (Setup entry, tab switch, REF) opens at the top with the focus on the browser's row, a rebuild of the same form keeps its scroll position, and UP/DOWN toward an off-screen focus scroll toward it first; `FALSE` (default) scrolls the focus row into view |
 | `PcdLvglNavUpWrap` | `TRUE` (default) wraps UP on the first row to the last row; `FALSE` scrolls up to hidden content first, then stays on the first row |
+| `PcdLvglSubmitHotKeyExits` | When TRUE, an HII hot key whose Action includes SUBMIT (not DEFAULT) asks "Save configuration and exit?" and, on Yes, saves and leaves Setup (Continue); `FALSE` (default) saves and stays |
 | `PcdLvglEzSetupAppFile` | FV file GUID of the firmware's own Setup application; the EZ boot list skips that load option. All zero (default) = no GUID filtering |
 | `PcdLvglEzChromeEnable` / `PcdLvglEzModeScanCode` | `TRUE` lets the front page show a platform EZ page from `LvglEzChromeLib`, and the scan code (e.g. `0x0011` = F7) switches between the EZ page and the Advanced pages; defaults `FALSE` / `0` (off, `LvglEzChromeLib` is never called) |
 

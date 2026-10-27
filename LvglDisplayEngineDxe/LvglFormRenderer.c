@@ -197,7 +197,8 @@ STATIC UINT32     mNoneAction         = BROWSER_ACTION_NONE;
 //
 typedef enum {
   LvglPopupPurposeBrowserAction = 0,
-  LvglPopupPurposeExitSetup
+  LvglPopupPurposeExitSetup,
+  LvglPopupPurposeSubmitExit            // SUBMIT hot key, PcdLvglSubmitHotKeyExits
 } LVGL_POPUP_PURPOSE;
 
 STATIC LVGL_POPUP_PURPOSE  mPopupPurpose = LvglPopupPurposeBrowserAction;
@@ -273,6 +274,13 @@ STATIC lv_obj_t   *mEzKeySink       = NULL;
 // selects Continue.
 //
 STATIC BOOLEAN    mEzLeaving        = FALSE;
+//
+// mSubmitExitPending: Yes on the SUBMIT hot key confirm with
+// PcdLvglSubmitHotKeyExits. After the browser saves, every non-front
+// FormDisplay returns FORM_EXIT without drawing until the front page selects
+// Continue. Separate from mEzLeaving (that one discards).
+//
+STATIC BOOLEAN    mSubmitExitPending = FALSE;
 //
 // mEzExitAsk: Esc on the EZ page; the event loop opens the Exit Setup
 // dialog after the key event has finished (the same Esc must not reach the
@@ -2226,8 +2234,23 @@ HandleFunctionKey (
                                   ? "Load Defaults?" : "Save Changes?";
           CONST CHAR8  *Label = ((HotKey->Action & BROWSER_ACTION_DEFAULT) != 0)
                                   ? "Load" : "Save";
+          CONST CHAR8         *Message = NULL;
+          LVGL_POPUP_PURPOSE  Purpose = LvglPopupPurposeBrowserAction;
+
+          //
+          // PcdLvglSubmitHotKeyExits: a SUBMIT hot key (without DEFAULT)
+          // saves and then leaves Setup once Yes is pressed.
+          //
+          if (PcdGetBool (PcdLvglSubmitHotKeyExits) &&
+              ((HotKey->Action & BROWSER_ACTION_DEFAULT) == 0))
+          {
+            Title   = "Save configuration and exit?";
+            Message = "Save all changes and leave Setup.";
+            Purpose = LvglPopupPurposeSubmitExit;
+          }
+
           mPendingDefaultId = HotKey->DefaultId;
-          ShowPopup (mSession.Group, Title, NULL, Label, HotKey->Action, FALSE, LvglPopupPurposeBrowserAction);
+          ShowPopup (mSession.Group, Title, Message, Label, HotKey->Action, FALSE, Purpose);
         }
       } else {
         RequestUserExit (HotKey->Action, HotKey->DefaultId, NULL);
@@ -3420,6 +3443,223 @@ LvglRendererGoBack (
   HandleEscKey ();
 }
 
+/**
+  TRUE when @a Statement is a question with EFI_IFR_FLAG_READ_ONLY.
+**/
+STATIC
+BOOLEAN
+IsStatementReadOnly (
+  IN FORM_DISPLAY_ENGINE_STATEMENT  *Statement
+  )
+{
+  EFI_IFR_QUESTION_HEADER  *Question;
+
+  if ((Statement == NULL) || (Statement->OpCode == NULL)) {
+    return FALSE;
+  }
+
+  switch (Statement->OpCode->OpCode) {
+    case EFI_IFR_ONE_OF_OP:
+    case EFI_IFR_NUMERIC_OP:
+    case EFI_IFR_CHECKBOX_OP:
+    case EFI_IFR_ORDERED_LIST_OP:
+      Question = (EFI_IFR_QUESTION_HEADER *)((UINT8 *)Statement->OpCode + sizeof (EFI_IFR_OP_HEADER));
+      return (BOOLEAN)((Question->Flags & EFI_IFR_FLAG_READ_ONLY) != 0);
+    default:
+      return FALSE;
+  }
+}
+
+/**
+  The ordered-list move context of a focused Up/Down button, or NULL.
+**/
+STATIC
+LVGL_ORDERED_MOVE_CTX *
+GetOrderedMoveCtx (
+  IN lv_obj_t  *Btn
+  )
+{
+  UINT32          Count;
+  UINT32          Idx;
+  lv_event_dsc_t  *Dsc;
+
+  if (Btn == NULL) {
+    return NULL;
+  }
+
+  Count = lv_obj_get_event_count (Btn);
+  for (Idx = 0; Idx < Count; Idx++) {
+    Dsc = lv_obj_get_event_dsc (Btn, Idx);
+    if ((Dsc != NULL) && (lv_event_dsc_get_cb (Dsc) == OnOrderedListMove)) {
+      return (LVGL_ORDERED_MOVE_CTX *)lv_event_dsc_get_user_data (Dsc);
+    }
+  }
+
+  return NULL;
+}
+
+/**
+  '+' / '-' on a focused control that is not being edited: change the value
+  and commit it (as the text display engine does). A oneof steps to the
+  next / previous option (wrapping), a numeric steps by its Step (clamped),
+  a checkbox toggles, and an ordered list moves the focused row's item up
+  ('+') or down ('-') through its Up / Down button. Date / time, text,
+  disabled and read-only controls are left alone.
+
+  @retval TRUE   The key was consumed.
+  @retval FALSE  Not handled here; the key continues to the widget.
+**/
+STATIC
+BOOLEAN
+HandlePlusMinusKey (
+  IN BOOLEAN                 Plus,
+  IN LVGL_STATEMENT_CONTEXT  *Ctx
+  )
+{
+  lv_obj_t               *Focused;
+  lv_obj_t               *Row;
+  lv_obj_t               *Target;
+  LVGL_ORDERED_MOVE_CTX  *MoveCtx;
+  EFI_IFR_NUMERIC        *NumOp;
+  UINT64                 Value;
+  UINT64                 Current;
+  UINT64                 MinVal;
+  UINT64                 MaxVal;
+  UINT64                 Step;
+  UINT32                 Count;
+  UINT32                 Sel;
+  CHAR8                  Buf[24];
+
+  if ((mSession.Group == NULL) || (mSession.UserInput == NULL) || mSession.ExitRequested) {
+    return FALSE;
+  }
+
+  Focused = lv_group_get_focused (mSession.Group);
+  if ((Focused == NULL) || lv_obj_has_state (Focused, LV_STATE_DISABLED)) {
+    return FALSE;
+  }
+
+  //
+  // Ordered list: the focused Up / Down button carries the row index.
+  //
+  MoveCtx = GetOrderedMoveCtx (Focused);
+  if (MoveCtx != NULL) {
+    if (IsStatementReadOnly (MoveCtx->Statement)) {
+      return TRUE;
+    }
+
+    Row    = lv_obj_get_parent (Focused);
+    Target = NULL;
+    if ((Row != NULL) && (lv_obj_get_child_count (Row) >= 3)) {
+      Target = lv_obj_get_child (Row, Plus ? 1 : 2);
+    }
+
+    if ((Target == NULL) || lv_obj_has_state (Target, LV_STATE_DISABLED) ||
+        (GetOrderedMoveCtx (Target) == NULL))
+    {
+      DEBUG ((DEBUG_INFO, "LvglRenderer: plus/minus ordered list row %u at the end\n", (UINT32)MoveCtx->Index));
+      return TRUE;
+    }
+
+    DEBUG ((DEBUG_INFO, "LvglRenderer: plus/minus ordered list row %u %a\n", (UINT32)MoveCtx->Index, Plus ? "up" : "down"));
+    lv_obj_send_event (Target, LV_EVENT_CLICKED, NULL);
+    return TRUE;
+  }
+
+  if ((Ctx == NULL) || (Ctx->Statement == NULL) || (Ctx->Statement->OpCode == NULL)) {
+    return FALSE;
+  }
+
+  if (IsStatementReadOnly (Ctx->Statement)) {
+    return TRUE;
+  }
+
+  switch (Ctx->Statement->OpCode->OpCode) {
+    case EFI_IFR_ONE_OF_OP:
+      if (!lv_obj_check_type (Focused, &lv_dropdown_class) || lv_dropdown_is_open (Focused)) {
+        return FALSE;
+      }
+
+      Count = lv_dropdown_get_option_count (Focused);
+      if (Count == 0) {
+        return TRUE;
+      }
+
+      Sel = lv_dropdown_get_selected (Focused);
+      Sel = Plus ? ((Sel + 1) % Count) : ((Sel + Count - 1) % Count);
+      DEBUG ((DEBUG_INFO, "LvglRenderer: plus/minus oneof qid=0x%x -> option %u of %u\n", ((EFI_IFR_ONE_OF *)Ctx->Statement->OpCode)->Question.QuestionId, Sel, Count));
+      lv_dropdown_set_selected (Focused, Sel);
+      lv_obj_send_event (Focused, LV_EVENT_VALUE_CHANGED, NULL);
+      return TRUE;
+
+    case EFI_IFR_NUMERIC_OP:
+      if ((Ctx->Widget != Focused) || !lv_obj_check_type (Focused, &lv_textarea_class)) {
+        return FALSE;
+      }
+
+      NumOp = (EFI_IFR_NUMERIC *)Ctx->Statement->OpCode;
+      GetNumericRange (NumOp, &MinVal, &MaxVal);
+      switch (NumOp->Flags & EFI_IFR_NUMERIC_SIZE) {
+        case EFI_IFR_NUMERIC_SIZE_1:
+          Step = NumOp->data.u8.Step;
+          break;
+        case EFI_IFR_NUMERIC_SIZE_2:
+          Step = NumOp->data.u16.Step;
+          break;
+        case EFI_IFR_NUMERIC_SIZE_4:
+          Step = NumOp->data.u32.Step;
+          break;
+        default:
+          Step = NumOp->data.u64.Step;
+          break;
+      }
+
+      if (Step == 0) {
+        Step = 1;
+      }
+
+      Current = AsciiDecimalToUint64 (lv_textarea_get_text (Focused));
+      Value   = ClampU64 (Current, MinVal, MaxVal);
+      if (Plus) {
+        Value = ((MaxVal - Value) < Step) ? MaxVal : (Value + Step);
+      } else {
+        Value = ((Value - MinVal) < Step) ? MinVal : (Value - Step);
+      }
+
+      //
+      // Already at the limit: nothing to change or commit; eat the key.
+      //
+      if (Value == Current) {
+        DEBUG ((DEBUG_INFO, "LvglRenderer: plus/minus numeric qid=0x%x at the limit\n", NumOp->Question.QuestionId));
+        return TRUE;
+      }
+
+      DEBUG ((DEBUG_INFO, "LvglRenderer: plus/minus numeric qid=0x%x -> %lu (min %lu max %lu step %lu)\n", NumOp->Question.QuestionId, Value, MinVal, MaxVal, Step));
+      Uint64ToAsciiDecimal (Value, Buf, sizeof (Buf));
+      lv_textarea_set_text (Focused, Buf);
+      (VOID)StageNumericUserInput (Ctx, TRUE);
+      return TRUE;
+
+    case EFI_IFR_CHECKBOX_OP:
+      if (!lv_obj_check_type (Focused, &lv_checkbox_class)) {
+        return FALSE;
+      }
+
+      if (lv_obj_has_state (Focused, LV_STATE_CHECKED)) {
+        lv_obj_remove_state (Focused, LV_STATE_CHECKED);
+      } else {
+        lv_obj_add_state (Focused, LV_STATE_CHECKED);
+      }
+
+      DEBUG ((DEBUG_INFO, "LvglRenderer: plus/minus checkbox qid=0x%x -> %u\n", ((EFI_IFR_CHECKBOX *)Ctx->Statement->OpCode)->Question.QuestionId, (UINT32)lv_obj_has_state (Focused, LV_STATE_CHECKED)));
+      lv_obj_send_event (Focused, LV_EVENT_VALUE_CHANGED, NULL);
+      return TRUE;
+
+    default:
+      return FALSE;
+  }
+}
+
 STATIC
 VOID
 OnNavKey (
@@ -3476,6 +3716,13 @@ OnNavKey (
   if (HandleFunctionKey (Key)) {
     lv_event_stop_processing (Event);
     return;
+  }
+
+  if (!Editing && ((Key == '+') || (Key == '-'))) {
+    if (HandlePlusMinusKey (Key == '+', Ctx)) {
+      lv_event_stop_processing (Event);
+      return;
+    }
   }
 
   if (!Editing && ((Key == LV_KEY_LEFT) || (Key == LV_KEY_RIGHT))) {
@@ -5740,6 +5987,23 @@ LvglRenderForm (
   }
 
   //
+  // SUBMIT hot key Yes (PcdLvglSubmitHotKeyExits), saved by the browser:
+  // leave every form without drawing it; the front page selects Continue.
+  //
+  if (mSubmitExitPending) {
+    if (!IsFrontPageFormData (FormData)) {
+      ZeroMem (UserInputData, sizeof (USER_INPUT));
+      UserInputData->Action = BROWSER_ACTION_FORM_EXIT;
+      DEBUG ((DEBUG_INFO, "LvglRenderer: submit exit, FORM_EXIT without drawing FormId=0x%x\n", FormData->FormId));
+      return EFI_SUCCESS;
+    }
+
+    mSubmitExitPending  = FALSE;
+    mPendingFrontAction = LvglFrontActionSelectContinue;
+    DEBUG ((DEBUG_INFO, "LvglRenderer: submit exit reached front page\n"));
+  }
+
+  //
   // EZ chrome: consulted only on the front page and only when
   // PcdLvglEzChromeEnable is TRUE.
   //
@@ -6124,10 +6388,19 @@ RunEvents:
           mPendingSaveExitRow = LvglSaveExitMax;
           RequestUserExit (mPopupResult, DefId, NULL);
         } else {
+          if (mPopupPurpose == LvglPopupPurposeSubmitExit) {
+            mSubmitExitPending = TRUE;
+            DEBUG ((DEBUG_INFO, "LvglRenderer: submit hot key Yes -> SUBMIT then leave Setup\n"));
+          }
+
           RequestUserExit (mPopupResult, mPendingDefaultId, NULL);
         }
       } else {
         mPendingSaveExitRow = LvglSaveExitMax;
+      }
+
+      if (mPopupPurpose == LvglPopupPurposeSubmitExit) {
+        mPopupPurpose = LvglPopupPurposeBrowserAction;
       }
 
       mPopupResult = LVGL_POPUP_PENDING;
@@ -6510,6 +6783,19 @@ LvglHiiCreatePopup (
 
 VOID
 EFIAPI
+LvglRendererCancelSubmitExit (
+  VOID
+  )
+{
+  if (mSubmitExitPending) {
+    DEBUG ((DEBUG_INFO, "LvglRenderer: submit exit cancelled (browser status)\n"));
+  }
+
+  mSubmitExitPending = FALSE;
+}
+
+VOID
+EFIAPI
 LvglRendererCleanup (
   VOID
   )
@@ -6534,6 +6820,7 @@ LvglRendererCleanup (
     mEzDecided = FALSE;
   }
   mEzLeaving = FALSE;
+  mSubmitExitPending = FALSE;
 
   if (mBannerTimer != NULL) {
     lv_timer_delete (mBannerTimer);

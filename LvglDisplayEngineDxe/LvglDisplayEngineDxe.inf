@@ -78,6 +78,7 @@
   gLvglPkgTokenSpaceGuid.PcdLvglNavUpWrap
   gLvglPkgTokenSpaceGuid.PcdLvglEzChromeEnable
   gLvglPkgTokenSpaceGuid.PcdLvglEzModeScanCode
+  gLvglPkgTokenSpaceGuid.PcdLvglSubmitHotKeyExits
 
 [BuildOptions]
   # Same LVGL header warnings as LvglLib.inf.

@@ -115,6 +115,7 @@ LvglFormDisplay (
     // intercepted while the text popup session is active.
     //
     if (FormData->BrowserStatus != BROWSER_SUCCESS) {
+      LvglRendererCancelSubmitExit ();
       return mTextFormDisplay.FormDisplay (FormData, UserInputData);
     }
 

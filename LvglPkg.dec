@@ -107,3 +107,7 @@
   #  skips a load option whose device path names this file. All zero = no
   #  GUID filtering (only LOAD_OPTION_HIDDEN entries are skipped).
   gLvglPkgTokenSpaceGuid.PcdLvglEzSetupAppFile|{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 }|VOID*|0x00000015
+
+  ## When TRUE, an HII hot key whose Action includes SUBMIT saves and exits
+  #  Setup after confirmation. FALSE keeps save-without-exit.
+  gLvglPkgTokenSpaceGuid.PcdLvglSubmitHotKeyExits|FALSE|BOOLEAN|0x00000016
