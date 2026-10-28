@@ -72,6 +72,20 @@ LvglEzChromeLeaveRequested (
 }
 
 /**
+  Report a save request. This instance has no save control.
+
+  @retval FALSE  Always.
+**/
+BOOLEAN
+EFIAPI
+LvglEzChromeSaveRequested (
+  VOID
+  )
+{
+  return FALSE;
+}
+
+/**
   Reset failed after a leave request. Nothing to show.
 **/
 VOID

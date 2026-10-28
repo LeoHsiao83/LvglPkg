@@ -40,7 +40,13 @@ STATIC struct {
 
 STATIC BOOLEAN  mPxCacheFullWarned = FALSE;
 
-#define LVGL_THEME_IMAGE_CACHE_MAX  32
+//
+// One slot per distinct FILE_GUID asked for (found or not found); the PNG
+// bytes stay until the theme is freed. 64 leaves room for a chrome that
+// uses more than 32 images on one screen set (decode output is limited
+// separately by LV_CACHE_DEF_SIZE in lv_conf.h).
+//
+#define LVGL_THEME_IMAGE_CACHE_MAX  64
 
 STATIC struct {
   EFI_GUID        Guid;

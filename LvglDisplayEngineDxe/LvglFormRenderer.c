@@ -2477,6 +2477,33 @@ IsSubmitExitHotKey (
 }
 
 /**
+  The EZ chrome asked for the SUBMIT hot key path (LvglEzChromeSaveRequested).
+  Same gate and same call as that hot key pressed on the EZ page: the first
+  F1..F12 key that is a SUBMIT hot key goes through HandleFunctionKey
+  (confirm popup). PcdLvglSubmitHotKeyExits FALSE or no such key: ignored.
+**/
+STATIC
+VOID
+EzSaveRequest (
+  VOID
+  )
+{
+  UINT32  Key;
+
+  if (PcdGetBool (PcdLvglSubmitHotKeyExits)) {
+    for (Key = LV_KEY_F1; Key <= LV_KEY_F12; Key++) {
+      if (IsSubmitExitHotKey (Key)) {
+        DEBUG ((DEBUG_INFO, "LvglRenderer: EZ save request -> hot key F%u\n", Key - LV_KEY_F1 + 1));
+        (VOID)HandleFunctionKey (Key);
+        return;
+      }
+    }
+  }
+
+  DEBUG ((DEBUG_INFO, "LvglRenderer: EZ save request ignored (no SUBMIT hot key path)\n"));
+}
+
+/**
   Indev-level key handler -- UP/DOWN/Tab navigation (including grayed rows)
   and ESC when nothing enabled is focused.
 **/
@@ -6391,6 +6418,13 @@ RunEvents:
       gRT->ResetSystem (EfiResetCold, EFI_SUCCESS, 0, NULL);
       DEBUG ((DEBUG_ERROR, "LvglRenderer: ResetSystem returned\n"));
       LvglEzChromeResetFailed ();
+    }
+
+    //
+    // The EZ page asked for save (its save button): the SUBMIT hot key path.
+    //
+    if (mEzShowing && (mPopupOverlay == NULL) && LvglEzChromeSaveRequested ()) {
+      EzSaveRequest ();
     }
 
     //

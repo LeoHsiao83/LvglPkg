@@ -72,6 +72,22 @@ LvglEzChromeLeaveRequested (
   );
 
 /**
+  Report (once) that the EZ page asked for the form's SUBMIT hot key path
+  (for example a save button). Polled by the engine while the EZ page is
+  shown and no popup is open; the engine then does exactly what that hot
+  key does on the EZ page when PcdLvglSubmitHotKeyExits is TRUE (confirm
+  popup first). The chrome saves nothing itself.
+
+  @retval TRUE   Run the SUBMIT hot key path.
+  @retval FALSE  Nothing asked.
+**/
+BOOLEAN
+EFIAPI
+LvglEzChromeSaveRequested (
+  VOID
+  );
+
+/**
   ResetSystem returned after a leave request. The EZ page shows that the
   reset failed; BootNext stays as written.
 **/
