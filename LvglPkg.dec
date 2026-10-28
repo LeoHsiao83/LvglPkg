@@ -111,3 +111,9 @@
   ## When TRUE, an HII hot key whose Action includes SUBMIT saves and exits
   #  Setup after confirmation. FALSE keeps save-without-exit.
   gLvglPkgTokenSpaceGuid.PcdLvglSubmitHotKeyExits|FALSE|BOOLEAN|0x00000016
+
+  ## When TRUE, a form whose refresh event fires (a question with a refresh
+  #  interval or refresh event) returns to the browser, which re-reads the
+  #  values and displays the form again with the same focus and scroll
+  #  position. FALSE never returns for a refresh (the values stay as drawn).
+  gLvglPkgTokenSpaceGuid.PcdLvglFormRefreshEnable|FALSE|BOOLEAN|0x00000017

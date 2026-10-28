@@ -133,6 +133,18 @@ STATIC BOOLEAN  mRestoreFocusPending = FALSE;
 STATIC UINTN    mRestoreFocusNavIdx  = 0;
 
 //
+// PcdLvglFormRefreshEnable: the event loop returned to the browser because
+// the form's refresh event fired. The next FormDisplay of the same form keeps
+// the focus row and the scroll position saved here.
+//
+STATIC BOOLEAN   mFormRefreshExit     = FALSE;
+STATIC EFI_GUID  mFormRefreshFormSet;
+STATIC UINT16    mFormRefreshFormId   = 0;
+STATIC INT32     mFormRefreshScrollY  = 0;
+STATIC UINTN     mFormRefreshFocusIdx = MAX_UINTN;
+STATIC UINT32    mFormRefreshCount    = 0;
+
+//
 // Keys typed before Setup appeared (e.g. the F2 that entered it) are dropped
 // once, before the first event loop of each Setup session.
 //
@@ -5993,6 +6005,54 @@ ShowEzPage (
   DEBUG ((DEBUG_INFO, "LvglRenderer: EZ page shown\n"));
 }
 
+/**
+  PcdLvglFormRefreshEnable: TRUE when the form's refresh event has fired and
+  the form can be left for the browser to re-read its values: an Advanced
+  form (not the EZ page, not the tab-mode front page), no popup, no open or
+  editing field, no deferred leave, and no key or pointer button held. While
+  any of these holds, the event stays signaled and is checked again.
+**/
+STATIC
+BOOLEAN
+FormRefreshDue (
+  IN FORM_DISPLAY_ENGINE_FORM  *FormData
+  )
+{
+  lv_indev_t  *Indev;
+  lv_obj_t    *Focused;
+
+  if (!PcdGetBool (PcdLvglFormRefreshEnable) || (FormData->FormRefreshEvent == NULL)) {
+    return FALSE;
+  }
+
+  if (mSession.ExitRequested || mEzShowing || mEzSwitchPending ||
+      (mPopupOverlay != NULL) || (mEditingDropdown != NULL) || mPendingLeave.Active ||
+      (mContentPanel == NULL) || (mSession.Group == NULL))
+  {
+    return FALSE;
+  }
+
+  if (PcdGetBool (PcdLvglFrontPageTabs) && IsFrontPageFormData (FormData)) {
+    return FALSE;
+  }
+
+  Focused = lv_group_get_focused (mSession.Group);
+  if (lv_group_get_editing (mSession.Group) ||
+      ((Focused != NULL) && lv_obj_check_type (Focused, &lv_textarea_class)))
+  {
+    return FALSE;
+  }
+
+  Indev = NULL;
+  while ((Indev = lv_indev_get_next (Indev)) != NULL) {
+    if (lv_indev_get_state (Indev) == LV_INDEV_STATE_PRESSED) {
+      return FALSE;
+    }
+  }
+
+  return (BOOLEAN)(gBS->CheckEvent (FormData->FormRefreshEvent) == EFI_SUCCESS);
+}
+
 EFI_STATUS
 EFIAPI
 LvglRenderForm (
@@ -6000,6 +6060,7 @@ LvglRenderForm (
   OUT USER_INPUT                *UserInputData
   )
 {
+  BOOLEAN          RefreshRebuild;
   EFI_STATUS       Status;
   lv_obj_t         *ContentPanel;
   lv_obj_t         *PrevScreen;
@@ -6017,6 +6078,15 @@ LvglRenderForm (
   Entry        = LvglFormEntryRestore;
   PrevScrollY  = 0;
   PrevFocusIdx = MAX_UINTN;
+
+  //
+  // PcdLvglFormRefreshEnable: the same form displayed again after a refresh
+  // exit keeps its focus row and scroll position.
+  //
+  RefreshRebuild   = (BOOLEAN)(mFormRefreshExit &&
+                               (FormData->FormId == mFormRefreshFormId) &&
+                               CompareGuid (&FormData->FormSetGuid, &mFormRefreshFormSet));
+  mFormRefreshExit = FALSE;
 
   //
   // Initialize LVGL if not yet done (constructor in LvglLib handles this,
@@ -6043,7 +6113,10 @@ LvglRenderForm (
   // are built, and before mSession.FormData is set (use FormData directly).
   //
   DEBUG_CODE (
-    DumpFormDiagnostics (FormData);
+    if (!RefreshRebuild) {
+      DumpFormDiagnostics (FormData);
+    }
+
     );
 
   //
@@ -6304,7 +6377,12 @@ BuildView:
   //
   lv_obj_update_layout (mSession.Screen);
   AutoFocus      = lv_group_get_focused (mSession.Group);
-  mNavScrollHold = (BOOLEAN)(Entry != LvglFormEntryRestore);
+  mNavScrollHold = (BOOLEAN)((Entry != LvglFormEntryRestore) || RefreshRebuild);
+  if (RefreshRebuild && (mFormRefreshFocusIdx < mNavCount)) {
+    mRestoreFocusNavIdx  = mFormRefreshFocusIdx;
+    mRestoreFocusPending = TRUE;
+  }
+
   if (mRestoreFocusPending) {
     if (mRestoreFocusNavIdx < mNavCount) {
       lv_group_focus_obj (mNavList[mRestoreFocusNavIdx]);
@@ -6376,6 +6454,24 @@ BuildView:
   }
 
   //
+  // PcdLvglFormRefreshEnable: back at the scroll position of the refresh
+  // exit (clamped at the bottom).
+  //
+  if (RefreshRebuild) {
+    lv_obj_scroll_to_y (mContentPanel, mFormRefreshScrollY, LV_ANIM_OFF);
+    lv_obj_update_layout (mContentPanel);
+    FocusIdx = FocusedNavIndex ();
+    DEBUG ((
+      DEBUG_INFO,
+      "LvglRenderer: form refresh FormId=0x%x n=%u scroll_y=%d focus=%d\n",
+      FormData->FormId,
+      mFormRefreshCount,
+      lv_obj_get_scroll_y (mContentPanel),
+      (FocusIdx < mNavCount) ? (INT32)FocusIdx : -1
+      ));
+  }
+
+  //
   // Finish a deferred leave after flushing the focused field on ESC/back.
   //
   if (CompletePendingLeaveIfReady ()) {
@@ -6396,7 +6492,9 @@ RunEvents:
   //
   // LVGL event loop -- run until user makes a selection or presses ESC.
   //
-  DEBUG ((DEBUG_INFO, "LvglRenderer: entering event loop for FormId=0x%x\n", FormData->FormId));
+  if (!RefreshRebuild) {
+    DEBUG ((DEBUG_INFO, "LvglRenderer: entering event loop for FormId=0x%x\n", FormData->FormId));
+  }
 
   mEzExitAsk = FALSE;
   while (!mSession.ExitRequested && !mEzSwitchPending) {
@@ -6489,6 +6587,31 @@ RunEvents:
 
       mPopupResult = LVGL_POPUP_PENDING;
     }
+
+    //
+    // PcdLvglFormRefreshEnable: the form's refresh event fired while nothing
+    // is being edited; let the browser re-read the values (BROWSER_ACTION_NONE,
+    // as the text display engine does) and come back to the same rows.
+    //
+    if (FormRefreshDue (FormData)) {
+      mFormRefreshScrollY  = lv_obj_get_scroll_y (mContentPanel);
+      mFormRefreshFocusIdx = FocusedNavIndex ();
+      mFormRefreshFormId   = FormData->FormId;
+      CopyGuid (&mFormRefreshFormSet, &FormData->FormSetGuid);
+      mFormRefreshCount++;
+      mFormRefreshExit = TRUE;
+      ZeroMem (UserInputData, sizeof (USER_INPUT));
+      UserInputData->Action  = BROWSER_ACTION_NONE;
+      mSession.ExitRequested = TRUE;
+    }
+  }
+
+  //
+  // Refresh exit: FormRefreshDue saw no key or button held, so there is no
+  // pending release to drain; keys typed meanwhile stay for the rebuilt form.
+  //
+  if (mFormRefreshExit) {
+    return EFI_SUCCESS;
   }
 
   //
